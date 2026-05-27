@@ -1,0 +1,16 @@
+[package]
+name = "rtfsn-sim"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rtfsn-sim"
+path = "src/main.rs"
+
+[dependencies]
+rtfsn-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+rand_distr = "0.5"
+blake3 = { workspace = true }

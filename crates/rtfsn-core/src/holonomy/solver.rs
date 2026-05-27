@@ -81,14 +81,15 @@ impl HolonomySolver {
                 // So if we are the larger id: expected = neighbor + twist
                 //    if we are the smaller id: expected = neighbor - twist
                 let expected = if node_id.0 > neighbor_id.0 {
-                    neighbor_frame.offset_nanos + twist.offset_nanos
+                    neighbor_frame.offset_nanos.saturating_add(twist.offset_nanos)
                 } else {
-                    neighbor_frame.offset_nanos - twist.offset_nanos
+                    neighbor_frame.offset_nanos.saturating_sub(twist.offset_nanos)
                 };
-                let error = expected - node_frame.offset_nanos;
+                let error = expected.saturating_sub(node_frame.offset_nanos);
 
                 let weight = twist.quality as f64 / 100.0;
-                correction_sum += (error as f64 * weight) as i64;
+                correction_sum =
+                    correction_sum.saturating_add((error as f64 * weight) as i64);
                 weight_sum += weight;
 
                 defects.push(error.unsigned_abs());
@@ -103,7 +104,7 @@ impl HolonomySolver {
 
         for (id, correction) in &updates {
             if let Some(frame) = self.nodes.get_mut(id) {
-                frame.offset_nanos += correction;
+                frame.offset_nanos = frame.offset_nanos.saturating_add(*correction);
             }
         }
 
@@ -206,11 +207,11 @@ impl HolonomySolver {
                 };
 
                 let expected = if node_id.0 > neighbor_id.0 {
-                    neighbor_frame.offset_nanos + twist.offset_nanos
+                    neighbor_frame.offset_nanos.saturating_add(twist.offset_nanos)
                 } else {
-                    neighbor_frame.offset_nanos - twist.offset_nanos
+                    neighbor_frame.offset_nanos.saturating_sub(twist.offset_nanos)
                 };
-                let error = (expected - node_frame.offset_nanos).unsigned_abs();
+                let error = expected.saturating_sub(node_frame.offset_nanos).unsigned_abs();
                 total_defect += error;
                 count += 1;
             }

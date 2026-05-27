@@ -5,6 +5,7 @@ members = [
     "crates/rtfsn-net",
     "crates/rtfsn-daemon",
     "crates/rtfsn-wasm",
+    "crates/rtfsn-sim",
 ]
 
 [workspace.package]
