@@ -1,0 +1,13 @@
+[package]
+name = "rtfsn-daemon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rtfsn-core = { workspace = true }
+rtfsn-net = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
