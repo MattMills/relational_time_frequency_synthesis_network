@@ -793,8 +793,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rand",
  "rtfsn-core",
  "rtfsn-net",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
