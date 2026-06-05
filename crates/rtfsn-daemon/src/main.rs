@@ -54,7 +54,7 @@ use rtfsn_core::sync::clock::{ClockState, TimeExchange};
 use rtfsn_core::sync::geometry::{CoordinateState, GeometryEngine};
 use rtfsn_core::sync::kalman::ClockKalman;
 use rtfsn_core::types::{Epoch, NodeId};
-use rtfsn_net::message::ProtocolMessage;
+use rtfsn_net::message::{PeerStats, ProtocolMessage};
 use rtfsn_net::native::UdpTransport;
 
 #[derive(Parser, Debug)]
@@ -141,6 +141,7 @@ struct NodeState {
     last_rtt_count: usize,
     last_epoch_start_secs: f64,
     epoch_duration_secs: f64,
+    current_epoch: u64,
 }
 
 fn now_nanos() -> u64 {
@@ -190,6 +191,7 @@ impl NodeState {
             last_rtt_count: 0,
             last_epoch_start_secs: 0.0,
             epoch_duration_secs: epoch_secs,
+            current_epoch: 0,
         }
     }
 
@@ -377,6 +379,87 @@ impl NodeState {
             now_nanos(),
             1,
         );
+    }
+
+    fn build_stats_response(&self) -> ProtocolMessage {
+        let peers: Vec<PeerStats> = self
+            .twist_lut
+            .neighbors(self.node_id)
+            .into_iter()
+            .filter_map(|peer_id| {
+                let twist = self.twist_lut.latest(self.node_id, peer_id)?;
+                let profile = self.twist_lut.profile(self.node_id, peer_id);
+                let addr = self
+                    .peers
+                    .get(&peer_id)
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let rtt_jitter_ns = profile
+                    .as_ref()
+                    .map(|p| (p.variance_nanos as f64).sqrt() as u64)
+                    .unwrap_or(0);
+                let trend_nanos_per_epoch =
+                    profile.as_ref().map(|p| p.trend_nanos_per_epoch).unwrap_or(0);
+                let sample_count =
+                    profile.as_ref().map(|p| p.sample_count).unwrap_or(1);
+                Some(PeerStats {
+                    peer_id,
+                    peer_addr: addr,
+                    rtt_nanos: twist.rtt_nanos,
+                    rtt_jitter_ns,
+                    offset_nanos: twist.offset_nanos,
+                    asymmetry_nanos: twist.asymmetry_nanos,
+                    quality: twist.quality,
+                    epoch_measured: twist.epoch_measured,
+                    trend_nanos_per_epoch,
+                    sample_count,
+                })
+            })
+            .collect();
+
+        // Aggregate jitter: std dev of per-peer RTT values
+        let rtt_jitter_ns = if peers.len() > 1 {
+            let mean = self.last_rtt_mean_ns;
+            let var = peers
+                .iter()
+                .map(|p| {
+                    let d = p.rtt_nanos as i64 - mean as i64;
+                    (d * d) as u64
+                })
+                .sum::<u64>()
+                / peers.len() as u64;
+            (var as f64).sqrt() as u64
+        } else {
+            0
+        };
+
+        let geoid_region_counts: Vec<u32> = self
+            .circulation
+            .geoid
+            .layers
+            .iter()
+            .map(|l| l.regions.len() as u32)
+            .collect();
+
+        ProtocolMessage::StatsResponse {
+            node_id: self.node_id,
+            epoch: self.current_epoch,
+            offset_nanos: self.last_offset_nanos,
+            uncertainty_nanos: self.last_uncertainty_nanos,
+            drift_ppb: self.last_drift_ppb,
+            solver_converged: self.last_solver_converged,
+            solver_iters: self.last_solver_iters,
+            max_defect_nanos: self.last_max_defect_nanos,
+            rtt_min_ns: self.last_rtt_min_ns,
+            rtt_mean_ns: self.last_rtt_mean_ns,
+            rtt_max_ns: self.last_rtt_max_ns,
+            rtt_jitter_ns,
+            geoid_depth: self.circulation.geoid.depth(),
+            geoid_region_counts,
+            chain_length: self.clock_stream.len() as u64,
+            chain_valid: self.clock_stream.verify_all(),
+            peers,
+        }
     }
 
     fn print_status(&self, epoch: Epoch) {
@@ -584,6 +667,11 @@ async fn handle_message(
                 .ok();
         }
 
+        ProtocolMessage::StatsRequest {} => {
+            let response = state.lock().await.build_stats_response();
+            transport.send_to_addr(from_addr, &response).await.ok();
+        }
+
         other => {
             debug!(
                 "ignoring message variant {:?} from {}",
@@ -630,6 +718,7 @@ async fn epoch_loop(
 
     loop {
         let epoch = Epoch(epoch_num);
+        state.lock().await.current_epoch = epoch_num;
 
         // ── MEASURE PHASE ──────────────────────────────────────────────────
         {

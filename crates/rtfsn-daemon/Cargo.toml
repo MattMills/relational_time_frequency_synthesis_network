@@ -3,6 +3,10 @@ name = "rtfsn-daemon"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "rtfsn-query"
+path = "src/bin/query.rs"
+
 [dependencies]
 rtfsn-core = { workspace = true }
 rtfsn-net = { workspace = true }

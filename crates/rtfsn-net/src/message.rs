@@ -1,6 +1,27 @@
 use rtfsn_core::types::{Epoch, NodeId};
 use serde::{Deserialize, Serialize};
 
+/// Per-peer statistics carried in a StatsResponse.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerStats {
+    pub peer_id: NodeId,
+    /// Stringified SocketAddr of the peer.
+    pub peer_addr: String,
+    /// Most recent measured round-trip time (nanoseconds).
+    pub rtt_nanos: u64,
+    /// RTT standard deviation across measurement history (nanoseconds).
+    pub rtt_jitter_ns: u64,
+    /// Most recent clock offset measurement (nanoseconds).
+    pub offset_nanos: i64,
+    /// Asymmetry between forward and backward one-way delays (nanoseconds).
+    pub asymmetry_nanos: i64,
+    pub quality: u32,
+    pub epoch_measured: u64,
+    /// Linear trend of RTT over epochs (nanoseconds per epoch; negative = improving).
+    pub trend_nanos_per_epoch: i64,
+    pub sample_count: u32,
+}
+
 /// Protocol messages exchanged between nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProtocolMessage {
@@ -79,6 +100,31 @@ pub enum ProtocolMessage {
     PeerAnnounce {
         node_id: NodeId,
         listen_port: u16,
+    },
+
+    /// Stats query request from rtfsn-query tool.
+    StatsRequest {},
+
+    /// Stats query response.
+    StatsResponse {
+        node_id: NodeId,
+        epoch: u64,
+        offset_nanos: i64,
+        uncertainty_nanos: u64,
+        drift_ppb: i64,
+        solver_converged: bool,
+        solver_iters: u32,
+        max_defect_nanos: u64,
+        rtt_min_ns: u64,
+        rtt_mean_ns: u64,
+        rtt_max_ns: u64,
+        /// Standard deviation of per-peer RTTs (nanoseconds).
+        rtt_jitter_ns: u64,
+        geoid_depth: u8,
+        geoid_region_counts: Vec<u32>,
+        chain_length: u64,
+        chain_valid: bool,
+        peers: Vec<PeerStats>,
     },
 }
 
