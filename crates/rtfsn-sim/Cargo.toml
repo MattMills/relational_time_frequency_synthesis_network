@@ -7,6 +7,10 @@ edition.workspace = true
 name = "rtfsn-sim"
 path = "src/main.rs"
 
+[[bin]]
+name = "geoid-sim"
+path = "src/geoid_sim.rs"
+
 [dependencies]
 rtfsn-core = { workspace = true }
 serde = { workspace = true }
