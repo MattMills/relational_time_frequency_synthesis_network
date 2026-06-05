@@ -87,4 +87,19 @@ impl UdpTransport {
             .local_addr()
             .map_err(|e| TransportError::ConnectionFailed(e.to_string()))
     }
+
+    pub async fn send_to_addr(
+        &self,
+        addr: SocketAddr,
+        message: &ProtocolMessage,
+    ) -> Result<(), TransportError> {
+        let data = message
+            .serialize()
+            .map_err(|e| TransportError::SendFailed(e.to_string()))?;
+        self.socket
+            .send_to(&data, addr)
+            .await
+            .map_err(|e| TransportError::SendFailed(e.to_string()))?;
+        Ok(())
+    }
 }

@@ -128,6 +128,21 @@ impl Coordinates {
     }
 }
 
+/// Statistical profile of latency distribution between two nodes over multiple epochs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationalLatencyProfile {
+    pub mean_nanos: i64,
+    pub variance_nanos: i64,
+    pub p10_nanos: i64,
+    pub p50_nanos: i64,
+    pub p90_nanos: i64,
+    /// Rate of change of mean latency (nanoseconds per epoch, positive = increasing)
+    pub trend_nanos_per_epoch: i64,
+    pub sample_count: u32,
+    pub epoch_first: u64,
+    pub epoch_last: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleDigest(pub [u8; 32]);
 
