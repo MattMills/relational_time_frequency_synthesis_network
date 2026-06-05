@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod dht;
 pub mod epoch;
+pub mod geoid;
 pub mod holonomy;
 pub mod layers;
 pub mod sync;

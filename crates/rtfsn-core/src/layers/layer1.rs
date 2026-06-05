@@ -23,6 +23,7 @@ pub struct Layer1Beacon {
 
     pub proof_of_identity: BlindingProof,
     pub proof_of_peer_count: Option<PeerCountProof>,
+    pub geoid_coord: Option<crate::geoid::embedding::CommittedGeoidCoordinate>,
 }
 
 /// Proof that the node incorporated at least k distinct peers.
@@ -121,6 +122,7 @@ mod tests {
             consistency_score: 0.95,
             proof_of_identity: proof,
             proof_of_peer_count: None,
+            geoid_coord: None,
         };
 
         assert!(beacon.verify_identity());

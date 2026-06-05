@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::types::NodeId;
+use crate::types::{NodeId, RelationalLatencyProfile};
 
 /// TwistIndex: integer-basis encoding of the measurement between two nodes.
 /// Stored at the connecting edge, not at either node.
@@ -125,6 +125,78 @@ impl TwistLUT {
     pub fn edge_count(&self) -> usize {
         self.entries.len()
     }
+
+    /// Compute a relational latency profile from the measurement history for an edge.
+    pub fn profile(&self, a: NodeId, b: NodeId) -> Option<RelationalLatencyProfile> {
+        let twists = self.get(a, b)?;
+        if twists.is_empty() {
+            return None;
+        }
+
+        // Compute mean
+        let mean = twists.iter().map(|t| t.rtt_nanos as i64).sum::<i64>()
+            / twists.len() as i64;
+
+        // Compute variance
+        let variance = twists
+            .iter()
+            .map(|t| {
+                let d = t.rtt_nanos as i64 - mean;
+                d * d
+            })
+            .sum::<i64>()
+            / twists.len() as i64;
+
+        // Compute percentiles (sort RTTs)
+        let mut rtts: Vec<i64> =
+            twists.iter().map(|t| t.rtt_nanos as i64).collect();
+        rtts.sort_unstable();
+        let p10 = rtts[rtts.len() / 10];
+        let p50 = rtts[rtts.len() / 2];
+        let p90 = rtts[rtts.len() * 9 / 10];
+
+        // Compute trend using linear regression on epoch_measured vs rtt
+        let trend = if twists.len() >= 2 {
+            let n = twists.len() as i64;
+            let sum_x: i64 =
+                twists.iter().map(|t| t.epoch_measured as i64).sum();
+            let sum_y: i64 =
+                twists.iter().map(|t| t.rtt_nanos as i64).sum();
+            let sum_xy: i64 = twists
+                .iter()
+                .map(|t| t.epoch_measured as i64 * t.rtt_nanos as i64)
+                .sum();
+            let sum_xx: i64 = twists
+                .iter()
+                .map(|t| (t.epoch_measured as i64).pow(2))
+                .sum();
+            let denom = n * sum_xx - sum_x * sum_x;
+            if denom != 0 {
+                (n * sum_xy - sum_x * sum_y) / denom
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let epoch_first =
+            twists.first().map(|t| t.epoch_measured).unwrap_or(0);
+        let epoch_last =
+            twists.last().map(|t| t.epoch_measured).unwrap_or(0);
+
+        Some(RelationalLatencyProfile {
+            mean_nanos: mean,
+            variance_nanos: variance,
+            p10_nanos: p10,
+            p50_nanos: p50,
+            p90_nanos: p90,
+            trend_nanos_per_epoch: trend,
+            sample_count: twists.len() as u32,
+            epoch_first,
+            epoch_last,
+        })
+    }
 }
 
 impl Default for TwistLUT {
@@ -189,5 +261,45 @@ mod tests {
         let holonomy = lut.loop_holonomy(&[a, b, c]).unwrap();
         // Consistent: a→b(+1) + b→c(+2) + c→a(-3) = 0
         assert_eq!(holonomy, 0, "holonomy = {holonomy}");
+    }
+
+    #[test]
+    fn test_relational_latency_profile() {
+        let mut lut = TwistLUT::new();
+        let a = NodeId([1u8; 32]);
+        let b = NodeId([2u8; 32]);
+
+        // Add multiple measurements with increasing RTT (trend > 0)
+        let rtts: &[u64] = &[
+            10_000_000, 12_000_000, 14_000_000, 16_000_000, 18_000_000,
+            20_000_000, 22_000_000, 24_000_000, 26_000_000, 28_000_000,
+        ];
+        for (i, &rtt) in rtts.iter().enumerate() {
+            lut.insert(
+                a,
+                b,
+                TwistIndex {
+                    rtt_nanos: rtt,
+                    offset_nanos: 0,
+                    asymmetry_nanos: 0,
+                    quality: 100,
+                    epoch_measured: (i + 1) as u64,
+                },
+            );
+        }
+
+        let profile = lut.profile(a, b).expect("profile should exist");
+        assert_eq!(profile.sample_count, 10);
+        // Mean of 10..28ms in steps of 2ms = 19ms
+        assert_eq!(profile.mean_nanos, 19_000_000);
+        // Percentiles: p50 should be in the middle
+        assert!(profile.p50_nanos >= 14_000_000 && profile.p50_nanos <= 24_000_000);
+        // p10 < p50 < p90
+        assert!(profile.p10_nanos <= profile.p50_nanos);
+        assert!(profile.p50_nanos <= profile.p90_nanos);
+        // Positive trend (RTT increasing)
+        assert!(profile.trend_nanos_per_epoch > 0);
+        assert_eq!(profile.epoch_first, 1);
+        assert_eq!(profile.epoch_last, 10);
     }
 }
