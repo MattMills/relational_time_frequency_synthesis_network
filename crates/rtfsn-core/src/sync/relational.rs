@@ -58,6 +58,15 @@ pub struct TrackConfig {
     pub warmup: u64,
     /// Raw measurements kept per edge in the [`TwistLUT`].
     pub history: usize,
+    /// An offset this far (ns) from the track's prediction, and more than fifty of its own
+    /// standard deviations, is a step: the peer's timescale moved (a restart that re-anchored
+    /// it, a clock set by hand). One is rejected; a second in a row starts the track afresh.
+    #[serde(default = "default_step_ns")]
+    pub step_ns: f64,
+}
+
+fn default_step_ns() -> f64 {
+    5_000_000.0
 }
 
 impl Default for TrackConfig {
@@ -72,6 +81,7 @@ impl Default for TrackConfig {
             popcorn_ratio: 0.5,
             warmup: 8,
             history: 256,
+            step_ns: default_step_ns(),
         }
     }
 }
@@ -116,6 +126,12 @@ pub enum Reject {
     },
     /// Older than an exchange already absorbed.
     OutOfOrder,
+    /// The offset jumped from the prediction by this much (ns); a second jump in a row restarts
+    /// the track.
+    Step {
+        /// Measured minus predicted offset, ns.
+        jump_ns: i64,
+    },
 }
 
 /// The outcome of one exchange.
@@ -127,6 +143,8 @@ pub enum Observation {
         twist: TwistIndex,
         /// The track's relation after absorbing it.
         relation: Relation,
+        /// The track was started afresh on this exchange after a step.
+        restarted: bool,
     },
     /// Not used.
     Rejected {
@@ -153,6 +171,11 @@ pub struct PeerTrack {
     pub rejected: u64,
     /// The last absorbed measurement.
     pub last: Option<TwistIndex>,
+    /// Times the track restarted after a step.
+    #[serde(default)]
+    pub steps: u64,
+    #[serde(default)]
+    suspect: u32,
 }
 
 impl PeerTrack {
@@ -168,6 +191,8 @@ impl PeerTrack {
             accepted: 0,
             rejected: 0,
             last: None,
+            steps: 0,
+            suspect: 0,
         }
     }
 
@@ -217,6 +242,38 @@ impl PeerTrack {
             };
         }
         let twist = TwistIndex::from_exchange(t1, t2, t3, t4);
+        let mut restarted = false;
+        if self.accepted >= self.cfg.warmup {
+            let dt = (mid - self.last_ns) as f64 * 1e-9;
+            let predicted =
+                self.base_offset_ns as f64 + (self.kalman.x[0] + self.kalman.x[1] * dt) * 1e9;
+            let jump = twist.offset_nanos as f64 - predicted;
+            let spread =
+                (self.kalman.p[0] + 2.0 * dt * self.kalman.p[1] + dt * dt * self.kalman.p[2])
+                    .max(0.0)
+                    .sqrt()
+                    * 1e9
+                    + self.cfg.stamp_noise_ns
+                    + excess / 2.0;
+            if jump.abs() > self.cfg.step_ns.max(50.0 * spread) {
+                self.suspect += 1;
+                if self.suspect < 2 {
+                    self.rejected += 1;
+                    return Observation::Rejected {
+                        reason: Reject::Step {
+                            jump_ns: jump as i64,
+                        },
+                    };
+                }
+                // Twice in a row: the peer's timescale moved. Start over from this exchange.
+                self.steps += 1;
+                self.accepted = 0;
+                self.rtts.clear();
+                self.rtts.push_back(rtt);
+                restarted = true;
+            }
+            self.suspect = 0;
+        }
         // Until the floor has settled it cannot say how much of a round trip is queue (an early
         // spike would measure its excess against itself), so the bound is the whole asymmetry
         // half a round trip allows.
@@ -247,6 +304,7 @@ impl PeerTrack {
         Observation::Accepted {
             twist,
             relation: self.relation().expect("just absorbed one"),
+            restarted,
         }
     }
 
@@ -285,12 +343,38 @@ struct Heard {
     received_ns: u64,
 }
 
+/// The node that stands for UTC itself in an absolute frame. It neither measures nor is measured:
+/// [`RelationalClock::solve_absolute`] joins it to every [`Anchor`] by an edge whose spread is the
+/// anchor's distance from UTC, and holds it at zero.
+pub const UTC: NodeId = NodeId([0xFF; 32]);
+
+/// An absolute reference: a node (usually an NTP server) whose clock is UTC up to its own error.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    /// The reference.
+    pub node: NodeId,
+    /// How far its clock may be from UTC, ns: an NTP server's root distance, plus half the round
+    /// trip of the path it was measured over (an asymmetry no averaging removes).
+    pub sigma_offset_ns: f64,
+    /// How far its rate may be from UTC's.
+    pub sigma_drift: f64,
+    /// Its NTP stratum (1 for a primary reference).
+    pub stratum: u8,
+}
+
+struct HeldAnchor {
+    anchor: Anchor,
+    received_ns: u64,
+    own: bool,
+}
+
 /// One node of a relational clock network: its own tracks and what it has heard.
 pub struct RelationalClock {
     me: NodeId,
     cfg: TrackConfig,
     tracks: BTreeMap<NodeId, PeerTrack>,
     heard: BTreeMap<(NodeId, NodeId), Heard>,
+    anchors: BTreeMap<NodeId, HeldAnchor>,
     lut: TwistLUT,
     inserts: usize,
 }
@@ -303,6 +387,7 @@ impl RelationalClock {
             cfg,
             tracks: BTreeMap::new(),
             heard: BTreeMap::new(),
+            anchors: BTreeMap::new(),
             lut: TwistLUT::new(),
             inserts: 0,
         }
@@ -346,10 +431,81 @@ impl RelationalClock {
         self.tracks.iter().map(|(id, t)| (*id, t))
     }
 
-    /// Drop a peer: its track and every heard edge touching it.
+    /// Drop a peer: its track, every heard edge touching it, and its anchor if it is one.
     pub fn forget(&mut self, peer: NodeId) {
         self.tracks.remove(&peer);
         self.heard.retain(|(a, b), _| *a != peer && *b != peer);
+        self.anchors.remove(&peer);
+    }
+
+    /// Absorb an exchange with an absolute reference (an NTP server answering a request this node
+    /// sent): `t1`, `t4` on our clock, `t2`, `t3` on the server's. The server becomes an
+    /// [`Anchor`] whose spread is `root_distance_ns` plus half our windowed round trip to it.
+    pub fn observe_reference(
+        &mut self,
+        server: NodeId,
+        exchange: (u64, u64, u64, u64),
+        root_distance_ns: f64,
+        stratum: u8,
+        sigma_drift: f64,
+        now_ns: u64,
+    ) -> Observation {
+        let (t1, t2, t3, t4) = exchange;
+        let obs = self.observe(server, t1, t2, t3, t4);
+        if let Some(t) = self.tracks.get(&server).filter(|t| t.accepted > 0) {
+            let floor = t.rtt_floor_ns().unwrap_or(0);
+            self.anchors.insert(
+                server,
+                HeldAnchor {
+                    anchor: Anchor {
+                        node: server,
+                        sigma_offset_ns: root_distance_ns + floor as f64 / 2.0,
+                        sigma_drift,
+                        stratum,
+                    },
+                    received_ns: now_ns,
+                    own: true,
+                },
+            );
+        }
+        obs
+    }
+
+    /// Keep an anchor another node measured. One this node measures itself stays its own; of two
+    /// heard for the same reference within ten seconds, the tighter is kept.
+    pub fn hear_anchor(&mut self, anchor: Anchor, now_ns: u64) {
+        match self.anchors.get(&anchor.node) {
+            Some(h) if h.own => return,
+            Some(h)
+                if h.anchor.sigma_offset_ns < anchor.sigma_offset_ns
+                    && now_ns.saturating_sub(h.received_ns) < 10_000_000_000 =>
+            {
+                return;
+            }
+            _ => {}
+        }
+        self.anchors.insert(
+            anchor.node,
+            HeldAnchor {
+                anchor,
+                received_ns: now_ns,
+                own: false,
+            },
+        );
+    }
+
+    /// Every anchor known, this node's own and heard ones.
+    pub fn anchors(&self) -> Vec<Anchor> {
+        self.anchors.values().map(|h| h.anchor).collect()
+    }
+
+    /// The anchors this node measures itself, to gossip.
+    pub fn own_anchors(&self) -> Vec<Anchor> {
+        self.anchors
+            .values()
+            .filter(|h| h.own)
+            .map(|h| h.anchor)
+            .collect()
     }
 
     /// This node's own edges, one per track with an estimate.
@@ -387,6 +543,8 @@ impl RelationalClock {
     pub fn expire(&mut self, now_ns: u64, max_age_ns: u64) {
         self.heard
             .retain(|_, h| now_ns.saturating_sub(h.received_ns) <= max_age_ns);
+        self.anchors
+            .retain(|_, h| h.own || now_ns.saturating_sub(h.received_ns) <= max_age_ns);
     }
 
     /// Every edge heard from others.
@@ -405,6 +563,60 @@ impl RelationalClock {
         let mut edges = self.edges();
         edges.extend(self.heard().copied());
         solve_frame(self.me, reference, at_ns, &edges)
+    }
+
+    /// The absolute frame: every clock against [`UTC`], which is the consensus of the anchors
+    /// weighted by their spreads, at `at_ns` on this node's clock. `None` without an anchor.
+    ///
+    /// Clock selection, as NTP does it: while at least three anchors remain and the worst one's
+    /// edge to UTC sits more than five of its own spreads from the consensus, it is set aside as a
+    /// falseticker and the frame solved again. With two anchors a disagreement shows as their
+    /// cycle through UTC, but neither can be named the liar.
+    ///
+    /// The anchors' edges are read at `at_ns`, so node timescales should already be near UTC (one
+    /// started from the system clock is); a timescale days from UTC would add its distance times
+    /// the anchors' rate spread to theirs.
+    pub fn solve_absolute(&self, at_ns: u64) -> Option<NetworkFrame> {
+        let mut edges = self.edges();
+        edges.extend(self.heard().copied());
+        let mut chosen = self.anchors();
+        if chosen.is_empty() {
+            return None;
+        }
+        let mut falsetickers = Vec::new();
+        loop {
+            let mut all = edges.clone();
+            all.extend(chosen.iter().map(|a| EdgeEstimate {
+                from: UTC,
+                to: a.node,
+                relation: Relation {
+                    at_ns,
+                    offset_ns: 0.0,
+                    drift: 0.0,
+                    sigma_offset_ns: a.sigma_offset_ns.max(MIN_SIGMA_NS),
+                    sigma_drift: a.sigma_drift.max(MIN_SIGMA_DRIFT),
+                },
+                rtt_floor_ns: 0,
+                samples: 0,
+            }));
+            let mut frame = solve_frame(self.me, UTC, at_ns, &all);
+            let worst = frame
+                .edges
+                .iter()
+                .filter(|e| e.from == UTC)
+                .max_by(|a, b| a.z_offset.abs().total_cmp(&b.z_offset.abs()))
+                .copied();
+            match worst {
+                Some(w) if chosen.len() >= 3 && w.z_offset.abs() > 5.0 => {
+                    chosen.retain(|a| a.node != w.to);
+                    falsetickers.push(w.to);
+                }
+                _ => {
+                    frame.falsetickers = falsetickers;
+                    return Some(frame);
+                }
+            }
+        }
     }
 }
 
@@ -494,12 +706,20 @@ pub struct NetworkFrame {
     pub rms_offset_ns: f64,
     /// Root mean square of the edges' relative-frequency residuals.
     pub rms_drift: f64,
+    /// Anchors set aside by clock selection in an absolute frame.
+    #[serde(default)]
+    pub falsetickers: Vec<NodeId>,
 }
 
 impl NetworkFrame {
     /// The frame of one node.
     pub fn node(&self, id: NodeId) -> Option<&NodeFrame> {
         self.nodes.iter().find(|n| n.id == id)
+    }
+
+    /// Whether this frame is against UTC (solved by [`RelationalClock::solve_absolute`]).
+    pub fn is_absolute(&self) -> bool {
+        self.reference == UTC
     }
 }
 
@@ -837,6 +1057,7 @@ pub fn solve_frame(
         cycles,
         rms_offset_ns,
         rms_drift,
+        falsetickers: Vec::new(),
     }
 }
 
@@ -1196,6 +1417,245 @@ mod tests {
         assert_eq!(
             (chiral.offset_nanos, chiral.drift_ppb, chiral.confidence),
             (1500, 2500, 1000)
+        );
+    }
+    #[test]
+    fn a_peer_whose_timescale_steps_is_tracked_afresh() {
+        let mut rng = StdRng::seed_from_u64(23);
+        let a = Osc {
+            offset_ns: 0.0,
+            ppm: 0.0,
+        };
+        let b = Osc {
+            offset_ns: 4e6,
+            ppm: 17.0,
+        };
+        let restarted = Osc {
+            offset_ns: 2.004e9,
+            ppm: 17.0,
+        };
+        let mut track = PeerTrack::new(TrackConfig::default());
+        let mut t = 1e9;
+        for _ in 0..200 {
+            let (t1, t2, t3, t4) = exchange(&mut rng, a, b, LAN, t, 0.0);
+            track.observe(t1, t2, t3, t4);
+            t += 250e6;
+        }
+        let mut outcomes = Vec::new();
+        for _ in 0..3 {
+            // Quiet exchanges, so only the step itself can trip the check.
+            let quiet = Link {
+                jitter_ns: 0.0,
+                spike_p: 0.0,
+                ..LAN
+            };
+            let (t1, t2, t3, t4) = exchange(&mut rng, a, restarted, quiet, t, 0.0);
+            outcomes.push(track.observe(t1, t2, t3, t4));
+            t += 250e6;
+        }
+        assert!(
+            matches!(
+                outcomes[0],
+                Observation::Rejected { reason: Reject::Step { jump_ns } } if (jump_ns - 2_000_000_000).abs() < 1_000_000
+            ),
+            "{:?}",
+            outcomes[0]
+        );
+        assert!(
+            matches!(
+                outcomes[1],
+                Observation::Accepted {
+                    restarted: true,
+                    ..
+                }
+            ),
+            "{:?}",
+            outcomes[1]
+        );
+        assert!(
+            matches!(
+                outcomes[2],
+                Observation::Accepted {
+                    restarted: false,
+                    ..
+                }
+            ),
+            "{:?}",
+            outcomes[2]
+        );
+        assert_eq!(track.steps, 1);
+        let rel = track.relation().unwrap();
+        let truth = restarted.read(a.inverse(rel.at_ns as f64)) - rel.at_ns as f64;
+        assert!(
+            (rel.offset_ns - truth).abs() < 50_000.0,
+            "{} vs {truth}",
+            rel.offset_ns
+        );
+    }
+
+    /// Clocks near UTC (milliseconds off, tens of ppm), meshed, and NTP servers: `A` on the LAN,
+    /// 200 µs fast with a 50 µs root distance; `B` across a WAN, 300 µs slow with 2 ms; and `C`,
+    /// 40 ms fast while claiming 100 µs. Returns node 0 after hearing everyone, and the time.
+    fn anchored(servers: &[(u8, f64, f64, Link)]) -> (RelationalClock, f64) {
+        const NODES: [Osc; 4] = [
+            Osc {
+                offset_ns: 1.2e6,
+                ppm: 0.0,
+            },
+            Osc {
+                offset_ns: -0.8e6,
+                ppm: 12.0,
+            },
+            Osc {
+                offset_ns: 3.1e6,
+                ppm: -7.5,
+            },
+            Osc {
+                offset_ns: -2.0e6,
+                ppm: 40.0,
+            },
+        ];
+        let mut rng = StdRng::seed_from_u64(29);
+        let mut clocks: Vec<RelationalClock> = (0..4)
+            .map(|i| RelationalClock::new(id(i as u8), TrackConfig::default()))
+            .collect();
+        let mut t = 1e9;
+        for _ in 0..240 {
+            for a in 0..4 {
+                for b in 0..4 {
+                    if a != b {
+                        let (t1, t2, t3, t4) = exchange(&mut rng, NODES[a], NODES[b], LAN, t, 0.0);
+                        clocks[a].observe(id(b as u8), t1, t2, t3, t4);
+                        t += 1e6;
+                    }
+                }
+                // Each server is asked by one node: server k by node k.
+                if let Some(&(sid, bias, root, link)) = servers.get(a) {
+                    let server = Osc {
+                        offset_ns: bias,
+                        ppm: 0.0,
+                    };
+                    let ex = exchange(&mut rng, NODES[a], server, link, t, 0.0);
+                    let now = NODES[a].read(t) as u64;
+                    clocks[a].observe_reference(id(sid), ex, root, 2, 5e-8, now);
+                    t += 1e6;
+                }
+            }
+            t += 400e6;
+        }
+        let edges: Vec<EdgeEstimate> = clocks[1..].iter().flat_map(|c| c.edges()).collect();
+        let anchors: Vec<Anchor> = clocks[1..].iter().flat_map(|c| c.own_anchors()).collect();
+        let now = NODES[0].read(t) as u64;
+        let mut c0 = clocks.swap_remove(0);
+        for e in edges {
+            c0.hear(e, now);
+        }
+        for a in anchors {
+            c0.hear_anchor(a, now);
+        }
+        // Check each node against truth here, where the oscillators are known.
+        let frame = c0.solve_absolute(now).expect("anchored");
+        let true_t = NODES[0].inverse(now as f64);
+        let chosen: Vec<&(u8, f64, f64, Link)> = servers
+            .iter()
+            .filter(|s| !frame.falsetickers.contains(&id(s.0)))
+            .collect();
+        let (mut wsum, mut bsum) = (0.0, 0.0);
+        for (sid, bias, _, _) in &chosen {
+            let a = frame_anchor(&c0, id(*sid));
+            let w = 1.0 / a.sigma_offset_ns.powi(2);
+            wsum += w;
+            bsum += w * bias;
+        }
+        let consensus = bsum / wsum;
+        for (i, osc) in NODES.iter().enumerate() {
+            let nf = frame.node(id(i as u8)).unwrap();
+            let truth = osc.read(true_t) - true_t;
+            assert!(
+                (nf.offset_ns - (truth - consensus)).abs() < 40_000.0,
+                "node {i}: {} vs {} (truth {truth}, consensus bias {consensus})",
+                nf.offset_ns,
+                truth - consensus
+            );
+            assert!(
+                (nf.drift * 1e6 - osc.ppm).abs() < 0.3,
+                "node {i}: {} ppm",
+                nf.drift * 1e6
+            );
+        }
+        (c0, t)
+    }
+
+    fn frame_anchor(c: &RelationalClock, node: NodeId) -> Anchor {
+        c.anchors().into_iter().find(|a| a.node == node).unwrap()
+    }
+
+    const WAN: Link = Link {
+        base_ab_ns: 15e6,
+        base_ba_ns: 15e6,
+        jitter_ns: 400_000.0,
+        spike_p: 0.05,
+    };
+
+    #[test]
+    fn anchors_put_every_clock_on_utc_and_a_falseticker_is_set_aside() {
+        let (c0, t) = anchored(&[
+            (200, 200_000.0, 50_000.0, LAN),
+            (201, -300_000.0, 2e6, WAN),
+            (202, 40e6, 100_000.0, LAN),
+        ]);
+        let frame = c0.solve_absolute(t as u64).unwrap();
+        assert!(frame.is_absolute());
+        assert_eq!(frame.falsetickers, vec![id(202)]);
+        let a = frame_anchor(&c0, id(200));
+        assert!(
+            a.sigma_offset_ns > 50_000.0 && a.sigma_offset_ns < 300_000.0,
+            "{a:?}"
+        );
+    }
+
+    #[test]
+    fn two_disagreeing_anchors_show_as_a_cycle_through_utc() {
+        // Two that agree within their spreads: no falseticker, every clock on UTC (checked inside).
+        let (c0, t) = anchored(&[(200, 200_000.0, 50_000.0, LAN), (201, -300_000.0, 2e6, WAN)]);
+        assert!(c0.solve_absolute(t as u64).unwrap().falsetickers.is_empty());
+        // Two 40 ms apart, each claiming 100 µs: no majority to name the liar, but their
+        // disagreement is a cycle through UTC that cannot close.
+        let mut rng = StdRng::seed_from_u64(37);
+        let node = Osc {
+            offset_ns: 1e6,
+            ppm: 5.0,
+        };
+        let mut c = RelationalClock::new(id(0), TrackConfig::default());
+        let mut t = 1e9;
+        for _ in 0..120 {
+            for (sid, bias) in [(200u8, 200_000.0), (201u8, 40e6)] {
+                let ex = exchange(
+                    &mut rng,
+                    node,
+                    Osc {
+                        offset_ns: bias,
+                        ppm: 0.0,
+                    },
+                    LAN,
+                    t,
+                    0.0,
+                );
+                c.observe_reference(id(sid), ex, 100_000.0, 1, 5e-8, node.read(t) as u64);
+                t += 1e6;
+            }
+            t += 500e6;
+        }
+        let frame = c.solve_absolute(node.read(t) as u64).unwrap();
+        assert!(frame.falsetickers.is_empty());
+        let through_utc = frame
+            .cycles
+            .iter()
+            .find(|c| c.nodes.contains(&UTC))
+            .expect("the two anchors close a cycle through UTC");
+        assert!(
+            through_utc.z > 10.0 && (through_utc.offset_ns.abs() - 39.8e6).abs() < 1e6,
+            "{through_utc:?}"
         );
     }
 }
