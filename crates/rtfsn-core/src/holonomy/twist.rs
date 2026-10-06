@@ -5,7 +5,7 @@ use crate::types::{NodeId, RelationalLatencyProfile};
 
 /// TwistIndex: integer-basis encoding of the measurement between two nodes.
 /// Stored at the connecting edge, not at either node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwistIndex {
     pub rtt_nanos: u64,
     pub offset_nanos: i64,
@@ -59,9 +59,28 @@ impl TwistLUT {
         if a.0 < b.0 { (a, b) } else { (b, a) }
     }
 
-    pub fn insert(&mut self, a: NodeId, b: NodeId, twist: TwistIndex) {
+    /// Record a measurement `a` made of `b` (offset = b's clock − a's clock).
+    ///
+    /// Entries are stored oriented along the edge key (smaller id → larger id), so a measurement
+    /// made from the larger id is negated on the way in: offset and asymmetry both change sign
+    /// when the edge is read from the other end. Without this a loop's holonomy depended on who
+    /// had initiated each exchange.
+    pub fn insert(&mut self, a: NodeId, b: NodeId, mut twist: TwistIndex) {
         let key = Self::edge_key(a, b);
+        if key.0 != a {
+            twist.offset_nanos = twist.offset_nanos.saturating_neg();
+            twist.asymmetry_nanos = twist.asymmetry_nanos.saturating_neg();
+        }
         self.entries.entry(key).or_default().push(twist);
+    }
+
+    /// Keep at most the `max_per_edge` newest measurements on every edge.
+    pub fn trim(&mut self, max_per_edge: usize) {
+        for v in self.entries.values_mut() {
+            if v.len() > max_per_edge {
+                v.drain(..v.len() - max_per_edge);
+            }
+        }
     }
 
     pub fn get(&self, a: NodeId, b: NodeId) -> Option<&[TwistIndex]> {
@@ -256,6 +275,48 @@ mod tests {
         let holonomy = lut.loop_holonomy(&[a, b, c]).unwrap();
         // Consistent: a→b(+1) + b→c(+2) + c→a(-3) = 0
         assert_eq!(holonomy, 0, "holonomy = {holonomy}");
+    }
+
+    #[test]
+    fn test_loop_holonomy_independent_of_who_initiated() {
+        // Clocks: a = 0, b = +1 ms, c = +3 ms. Every exchange is real (from_exchange), with
+        // 5 ms each way, but each edge is measured from a different end.
+        let (a, b, c) = (NodeId([1u8; 32]), NodeId([2u8; 32]), NodeId([3u8; 32]));
+        let clock = |n: NodeId| match n.0[0] {
+            1 => 0i64,
+            2 => 1_000_000,
+            _ => 3_000_000,
+        };
+        let exchange = |from: NodeId, to: NodeId| {
+            let t1 = 10_000_000_000i64 + clock(from);
+            let t2 = t1 - clock(from) + 5_000_000 + clock(to);
+            let t3 = t2 + 100_000;
+            let t4 = t3 - clock(to) + 5_000_000 + clock(from);
+            TwistIndex::from_exchange(t1 as u64, t2 as u64, t3 as u64, t4 as u64)
+        };
+        let mut lut = TwistLUT::new();
+        lut.insert(b, a, exchange(b, a)); // initiated from the larger id
+        lut.insert(b, c, exchange(b, c));
+        lut.insert(c, a, exchange(c, a)); // initiated from the larger id
+        assert_eq!(lut.loop_holonomy(&[a, b, c]), Some(0));
+        assert_eq!(lut.latest(a, b).unwrap().offset_nanos, 1_000_000);
+        assert_eq!(lut.latest(a, c).unwrap().offset_nanos, 3_000_000);
+    }
+
+    #[test]
+    fn test_trim_keeps_newest() {
+        let (a, b) = (NodeId([1u8; 32]), NodeId([2u8; 32]));
+        let mut lut = TwistLUT::new();
+        for i in 0..10 {
+            lut.insert(a, b, TwistIndex::from_exchange(0, i, i, 1));
+        }
+        lut.trim(3);
+        let kept = lut.get(a, b).unwrap();
+        assert_eq!(kept.len(), 3);
+        assert_eq!(
+            kept.last().unwrap().offset_nanos,
+            TwistIndex::from_exchange(0, 9, 9, 1).offset_nanos
+        );
     }
 
     #[test]
