@@ -1,4 +1,4 @@
-use crate::types::{Coordinates, NodeId, COORDINATE_DIMENSIONS};
+use crate::types::{COORDINATE_DIMENSIONS, Coordinates, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -35,11 +35,7 @@ impl CoordinateState {
     }
 
     /// Update coordinates given a measured RTT to a peer.
-    pub fn update(
-        &mut self,
-        peer: &CoordinateState,
-        measured_rtt: f64,
-    ) -> f64 {
+    pub fn update(&mut self, peer: &CoordinateState, measured_rtt: f64) -> f64 {
         let dist = self.position.distance(&peer.position);
         let error = measured_rtt - dist;
         let relative_error = if measured_rtt > 1e-12 {
@@ -55,8 +51,7 @@ impl CoordinateState {
         };
 
         let ce = 0.25;
-        self.error = relative_error * ce * weight
-            + self.error * (1.0 - ce * weight);
+        self.error = relative_error * ce * weight + self.error * (1.0 - ce * weight);
 
         let delta = 0.25 * weight;
 
@@ -71,10 +66,9 @@ impl CoordinateState {
         } else if error.abs() > 1e-12 {
             let mut nudge_dims = [0.0; COORDINATE_DIMENSIONS];
             nudge_dims[0] = error.signum() * measured_rtt * delta;
-            self.position = self.position.add_scaled(
-                &Coordinates { dims: nudge_dims },
-                1.0,
-            );
+            self.position = self
+                .position
+                .add_scaled(&Coordinates { dims: nudge_dims }, 1.0);
         }
 
         relative_error
@@ -114,16 +108,10 @@ impl GeometryEngine {
     }
 
     pub fn predicted_rtt_to(&self, peer_id: &NodeId) -> Option<f64> {
-        self.peers
-            .get(peer_id)
-            .map(|p| self.local.predicted_rtt(p))
+        self.peers.get(peer_id).map(|p| self.local.predicted_rtt(p))
     }
 
-    pub fn residual(
-        &self,
-        peer_id: &NodeId,
-        measured_rtt: f64,
-    ) -> Option<f64> {
+    pub fn residual(&self, peer_id: &NodeId, measured_rtt: f64) -> Option<f64> {
         self.predicted_rtt_to(peer_id)
             .map(|predicted| (measured_rtt - predicted).abs())
     }
@@ -174,11 +162,7 @@ mod tests {
 
     #[test]
     fn test_triangle_consistency() {
-        let rtts = [
-            (0, 1, 0.030),
-            (0, 2, 0.050),
-            (1, 2, 0.040),
-        ];
+        let rtts = [(0, 1, 0.030), (0, 2, 0.050), (1, 2, 0.040)];
 
         let mut nodes = vec![
             CoordinateState::new(),

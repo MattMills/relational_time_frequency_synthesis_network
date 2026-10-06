@@ -49,12 +49,8 @@ pub fn marzullo(intervals: &[TimeInterval]) -> Option<TimeInterval> {
             .then_with(|| {
                 // Start events before End events at the same point
                 match (&a.1, &b.1) {
-                    (EventType::Start, EventType::End) => {
-                        std::cmp::Ordering::Less
-                    }
-                    (EventType::End, EventType::Start) => {
-                        std::cmp::Ordering::Greater
-                    }
+                    (EventType::Start, EventType::End) => std::cmp::Ordering::Less,
+                    (EventType::End, EventType::Start) => std::cmp::Ordering::Greater,
                     _ => std::cmp::Ordering::Equal,
                 }
             })
@@ -116,8 +112,8 @@ pub fn reject_geometric_outliers(
     }
 
     let mean: f64 = filtered.iter().sum::<f64>() / filtered.len() as f64;
-    let variance: f64 = filtered.iter().map(|o| (o - mean).powi(2)).sum::<f64>()
-        / filtered.len() as f64;
+    let variance: f64 =
+        filtered.iter().map(|o| (o - mean).powi(2)).sum::<f64>() / filtered.len() as f64;
     let stddev = variance.sqrt();
 
     // Reject if either high geometric residual OR statistical outlier
@@ -154,12 +150,12 @@ mod tests {
     #[test]
     fn test_geometric_outlier_rejection() {
         let offsets = vec![
-            (1.0, 0.001),   // good
-            (1.01, 0.002),  // good
-            (0.99, 0.001),  // good
-            (1.02, 0.003),  // good
-            (5.0, 0.5),     // bad: high residual
-            (1.0, 0.001),   // good
+            (1.0, 0.001),  // good
+            (1.01, 0.002), // good
+            (0.99, 0.001), // good
+            (1.02, 0.003), // good
+            (5.0, 0.5),    // bad: high residual
+            (1.0, 0.001),  // good
         ];
 
         let rejected = reject_geometric_outliers(&offsets, 0.01);

@@ -9,7 +9,9 @@ use crate::types::{Epoch, NodeId};
 fn identity_generator() -> RistrettoPoint {
     let hash = Sha512::digest(b"rtfsn_identity_blinding_generator_v1");
     RistrettoPoint::from_uniform_bytes(
-        hash.as_slice().try_into().expect("SHA-512 produces 64 bytes"),
+        hash.as_slice()
+            .try_into()
+            .expect("SHA-512 produces 64 bytes"),
     )
 }
 
@@ -68,8 +70,7 @@ impl BlindingSecret {
         let k2 = Scalar::from_bytes_mod_order_wide(&k2_bytes);
 
         let r = g * k1 + h * k2;
-        let commitment_point =
-            g * self.node_scalar + h * self.blinding_factor;
+        let commitment_point = g * self.node_scalar + h * self.blinding_factor;
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(&commitment_point.compress().to_bytes());
@@ -102,18 +103,16 @@ impl BlindingProof {
         let g = RISTRETTO_BASEPOINT_POINT;
         let h = identity_generator();
 
-        let Some(commitment_point) =
-            CompressedRistretto::from_slice(&self.commitment)
-                .ok()
-                .and_then(|c| c.decompress())
+        let Some(commitment_point) = CompressedRistretto::from_slice(&self.commitment)
+            .ok()
+            .and_then(|c| c.decompress())
         else {
             return false;
         };
 
-        let Some(r) =
-            CompressedRistretto::from_slice(&self.nonce_commitment)
-                .ok()
-                .and_then(|c| c.decompress())
+        let Some(r) = CompressedRistretto::from_slice(&self.nonce_commitment)
+            .ok()
+            .and_then(|c| c.decompress())
         else {
             return false;
         };

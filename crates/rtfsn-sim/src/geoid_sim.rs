@@ -13,7 +13,7 @@ use rtfsn_core::geoid::circulation::CirculationManager;
 use rtfsn_core::holonomy::twist::{TwistIndex, TwistLUT};
 use rtfsn_core::layers::layer1::Layer1Beacon;
 use rtfsn_core::sync::geometry::CoordinateState;
-use rtfsn_core::types::{Coordinates, Epoch, NodeId, COORDINATE_DIMENSIONS};
+use rtfsn_core::types::{COORDINATE_DIMENSIONS, Coordinates, Epoch, NodeId};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Simulation parameters
@@ -28,11 +28,7 @@ const GEOID_LEVELS: u8 = 4;
 // B "Central": [0.010, 0.000] – A↔B ~9ms  (merges with A at L2, 32ms threshold)
 // C "East":    [0.050, 0.010] – A↔C ~52ms, B↔C ~40ms (stays separate until L3)
 const REGION_NAMES: [&str; 3] = ["West    ", "Central ", "East    "];
-const REGION_CENTROIDS: [[f64; 2]; 3] = [
-    [0.001, 0.000],
-    [0.010, 0.000],
-    [0.050, 0.010],
-];
+const REGION_CENTROIDS: [[f64; 2]; 3] = [[0.001, 0.000], [0.010, 0.000], [0.050, 0.010]];
 const INTRA_JITTER: f64 = 0.0003; // ±0.3ms coordinate jitter per node
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,8 +359,7 @@ fn main() {
         }
         let res_ms = layer.resolution_nanos as f64 / 1_000_000.0;
         println!("  L{} ({:.0}ms) edges:", layer.level, res_ms);
-        let mut shown: std::collections::HashSet<(usize, usize)> =
-            std::collections::HashSet::new();
+        let mut shown: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
         for (i, region) in layer.regions.iter().enumerate() {
             for edge in &region.inter_edges {
                 if let Some(j) = layer.regions.iter().position(|r| r.id == edge.to) {
@@ -482,14 +477,7 @@ fn main() {
 
     println!(
         "{:>8}  {:>10}  {:>10}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
-        "Pair",
-        "True RTT",
-        "Mean RTT",
-        "StdDev",
-        "P10",
-        "P50",
-        "P90",
-        "Trend"
+        "Pair", "True RTT", "Mean RTT", "StdDev", "P10", "P50", "P90", "Trend"
     );
     println!("{}", "─".repeat(86));
 
@@ -557,7 +545,11 @@ fn main() {
     println!(
         "║  Convergence delta:    {:.3}  {}                         ║",
         final_delta,
-        if final_delta < 0.01 { "(stable)" } else { "(drifting)" },
+        if final_delta < 0.01 {
+            "(stable)"
+        } else {
+            "(drifting)"
+        },
     );
     println!("╚══════════════════════════════════════════════════════════╝");
 }

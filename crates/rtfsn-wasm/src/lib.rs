@@ -45,13 +45,7 @@ impl WasmClockNode {
 
     /// Process a time exchange with a peer.
     /// Returns the estimated clock offset in nanoseconds.
-    pub fn process_exchange(
-        &mut self,
-        t1: f64,
-        t2: f64,
-        t3: f64,
-        t4: f64,
-    ) -> f64 {
+    pub fn process_exchange(&mut self, t1: f64, t2: f64, t3: f64, t4: f64) -> f64 {
         let exchange = TimeExchange::new(t1, t2, t3, t4);
         let offset = exchange.offset();
         let delay = exchange.round_trip_delay();
@@ -68,10 +62,8 @@ impl WasmClockNode {
         let drift_ppb = (self.kalman.drift_rate() * 1_000_000_000.0) as i64;
 
         self.samr.classify_reachability(true);
-        self.samr
-            .classify_tier((delay * 1_000_000_000.0) as u64);
-        self.samr
-            .classify_offset(offset_nanos, uncertainty_nanos);
+        self.samr.classify_tier((delay * 1_000_000_000.0) as u64);
+        self.samr.classify_offset(offset_nanos, uncertainty_nanos);
         self.samr.classify_drift(drift_ppb);
 
         offset * 1_000_000_000.0 // return in nanoseconds
@@ -137,13 +129,7 @@ impl WasmHolonomySolver {
     }
 
     /// Add a measurement between two nodes.
-    pub fn add_measurement(
-        &mut self,
-        a_byte: u8,
-        b_byte: u8,
-        offset_nanos: i64,
-        rtt_nanos: u64,
-    ) {
+    pub fn add_measurement(&mut self, a_byte: u8, b_byte: u8, offset_nanos: i64, rtt_nanos: u64) {
         let a = NodeId([a_byte; 32]);
         let b = NodeId([b_byte; 32]);
         self.solver.add_measurement(
@@ -175,17 +161,11 @@ impl WasmHolonomySolver {
 
 /// Demonstrate the temporal mirror fixed-point computation.
 #[wasm_bindgen]
-pub fn find_temporal_fixed_point(
-    forward_json: &str,
-    backward_json: &str,
-) -> String {
-    let forward: Vec<i64> =
-        serde_json::from_str(forward_json).unwrap_or_default();
-    let backward: Vec<i64> =
-        serde_json::from_str(backward_json).unwrap_or_default();
+pub fn find_temporal_fixed_point(forward_json: &str, backward_json: &str) -> String {
+    let forward: Vec<i64> = serde_json::from_str(forward_json).unwrap_or_default();
+    let backward: Vec<i64> = serde_json::from_str(backward_json).unwrap_or_default();
 
-    let mirror =
-        TemporalMirror::find_fixed_point(&forward, &backward, 100);
+    let mirror = TemporalMirror::find_fixed_point(&forward, &backward, 100);
 
     serde_json::to_string(&mirror).unwrap_or_default()
 }

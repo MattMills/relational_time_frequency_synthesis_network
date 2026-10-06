@@ -2,7 +2,7 @@ use curve25519_dalek::scalar::Scalar;
 
 use crate::crypto::pedersen::{PedersenCommitment, SerializableCommitment};
 use crate::layers::layer1::Layer1Beacon;
-use crate::types::{Coordinates, Epoch, COORDINATE_DIMENSIONS};
+use crate::types::{COORDINATE_DIMENSIONS, Coordinates, Epoch};
 
 use super::model::{
     CommittedLatencyProfile, GeoidEdge, GeoidLayer, GeoidRegion, NetworkGeoid, RegionId,
@@ -35,11 +35,7 @@ impl CoarseningOperator {
     }
 
     /// Build the full hierarchy from a set of L1 beacons.
-    pub fn build_hierarchy(
-        &self,
-        beacons: &[&Layer1Beacon],
-        epoch: Epoch,
-    ) -> NetworkGeoid {
+    pub fn build_hierarchy(&self, beacons: &[&Layer1Beacon], epoch: Epoch) -> NetworkGeoid {
         if beacons.is_empty() {
             return NetworkGeoid::new(epoch);
         }
@@ -80,11 +76,7 @@ impl CoarseningOperator {
     }
 
     /// Build the finest geoid layer directly from beacons.
-    fn build_leaf_layer(
-        &self,
-        beacons: &[&Layer1Beacon],
-        epoch: Epoch,
-    ) -> GeoidLayer {
+    fn build_leaf_layer(&self, beacons: &[&Layer1Beacon], epoch: Epoch) -> GeoidLayer {
         let threshold = self.base_resolution_secs;
         let resolution_nanos = (threshold * 1e9) as u64;
 
@@ -140,31 +132,33 @@ impl CoarseningOperator {
                 let mean_nanos = if acc.offsets.is_empty() {
                     0i64
                 } else {
-                    let mean_secs =
-                        acc.offsets.iter().sum::<f64>() / acc.offsets.len() as f64;
+                    let mean_secs = acc.offsets.iter().sum::<f64>() / acc.offsets.len() as f64;
                     (mean_secs * 1e9) as i64
                 };
                 let variance_nanos = if acc.offsets.len() > 1 {
-                    let mean_secs =
-                        acc.offsets.iter().sum::<f64>() / acc.offsets.len() as f64;
-                    let var =
-                        acc.offsets.iter().map(|o| (o - mean_secs).powi(2)).sum::<f64>()
-                            / acc.offsets.len() as f64;
+                    let mean_secs = acc.offsets.iter().sum::<f64>() / acc.offsets.len() as f64;
+                    let var = acc
+                        .offsets
+                        .iter()
+                        .map(|o| (o - mean_secs).powi(2))
+                        .sum::<f64>()
+                        / acc.offsets.len() as f64;
                     (var * 1e18) as i64
                 } else {
                     0
                 };
-                let profile =
-                    self.commit_latency(mean_nanos, variance_nanos, acc.count);
+                let profile = self.commit_latency(mean_nanos, variance_nanos, acc.count);
 
                 // Radius: half-threshold
                 let radius = threshold / 2.0;
 
                 // Geoid residual: spread of clock offsets as a proxy for timing error
                 let residual = if acc.offsets.len() > 1 {
-                    let mean_secs =
-                        acc.offsets.iter().sum::<f64>() / acc.offsets.len() as f64;
-                    acc.offsets.iter().map(|o| (o - mean_secs).abs()).sum::<f64>()
+                    let mean_secs = acc.offsets.iter().sum::<f64>() / acc.offsets.len() as f64;
+                    acc.offsets
+                        .iter()
+                        .map(|o| (o - mean_secs).abs())
+                        .sum::<f64>()
                         / acc.offsets.len() as f64
                 } else {
                     0.0
@@ -198,8 +192,7 @@ impl CoarseningOperator {
     /// Coarsen a layer into the next (coarser) level.
     fn coarsen_layer(&self, layer: &GeoidLayer, epoch: Epoch) -> GeoidLayer {
         let next_level = layer.level + 1;
-        let threshold =
-            self.base_resolution_secs * self.scale_factor.powi(next_level as i32);
+        let threshold = self.base_resolution_secs * self.scale_factor.powi(next_level as i32);
         let resolution_nanos = (threshold * 1e9) as u64;
 
         let mut merged: Vec<bool> = vec![false; layer.regions.len()];
@@ -244,12 +237,7 @@ impl CoarseningOperator {
     }
 
     /// Merge a group of fine-level regions into one coarser super-region.
-    fn merge_regions(
-        &self,
-        regions: Vec<&GeoidRegion>,
-        level: u8,
-        epoch: Epoch,
-    ) -> GeoidRegion {
+    fn merge_regions(&self, regions: Vec<&GeoidRegion>, level: u8, epoch: Epoch) -> GeoidRegion {
         let total_members: u32 = regions.iter().map(|r| r.member_count).sum();
         let weight_sum = total_members as f64;
 
@@ -261,7 +249,9 @@ impl CoarseningOperator {
                 centroid_dims[i] += r.centroid.dims[i] * w;
             }
         }
-        let centroid = Coordinates { dims: centroid_dims };
+        let centroid = Coordinates {
+            dims: centroid_dims,
+        };
         let id = RegionId::from_centroid(&centroid, level, epoch);
 
         // Radius: max distance from centroid to any child centroid
@@ -301,11 +291,7 @@ impl CoarseningOperator {
     }
 
     /// Add inter-region edges to a set of regions for pairs within the threshold distance.
-    fn add_inter_edges(
-        &self,
-        mut regions: Vec<GeoidRegion>,
-        threshold: f64,
-    ) -> Vec<GeoidRegion> {
+    fn add_inter_edges(&self, mut regions: Vec<GeoidRegion>, threshold: f64) -> Vec<GeoidRegion> {
         // Collect edge data first to avoid borrow issues
         let n = regions.len();
         let mut edges_to_add: Vec<(usize, GeoidEdge)> = Vec::new();
@@ -369,10 +355,8 @@ impl CoarseningOperator {
 
         let committed_mean =
             SerializableCommitment::from(&PedersenCommitment::commit(&mean_scalar, &blinding_mean));
-        let committed_variance = SerializableCommitment::from(&PedersenCommitment::commit(
-            &var_scalar,
-            &blinding_var,
-        ));
+        let committed_variance =
+            SerializableCommitment::from(&PedersenCommitment::commit(&var_scalar, &blinding_var));
 
         CommittedLatencyProfile {
             committed_mean,

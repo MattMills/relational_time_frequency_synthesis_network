@@ -215,10 +215,17 @@ fn print_stats(resp: &ProtocolMessage, target: SocketAddr, query_time: u64) {
         fmt_ns(*rtt_mean_ns),
         fmt_ns(*rtt_max_ns)
     );
-    println!("  jitter     {}  (RTT std dev across peers)", fmt_ns(*rtt_jitter_ns));
+    println!(
+        "  jitter     {}  (RTT std dev across peers)",
+        fmt_ns(*rtt_jitter_ns)
+    );
 
     // Solver
-    let solver_status = if *solver_converged { "converged" } else { "timeout  " };
+    let solver_status = if *solver_converged {
+        "converged"
+    } else {
+        "timeout  "
+    };
     println!(
         "  solver     {}  {} iters  defect={}",
         solver_status,

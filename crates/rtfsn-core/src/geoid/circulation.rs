@@ -89,12 +89,8 @@ impl CirculationManager {
                     let residual_nanos = (region.geoid_residual * 1e9) as i64;
                     let priority = hint_priority(residual_nanos.unsigned_abs(), layer.level);
 
-                    let suggested: Vec<RegionId> = region
-                        .inter_edges
-                        .iter()
-                        .map(|e| e.to)
-                        .take(3)
-                        .collect();
+                    let suggested: Vec<RegionId> =
+                        region.inter_edges.iter().map(|e| e.to).take(3).collect();
 
                     hints.push(RefinementHint {
                         epoch,

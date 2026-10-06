@@ -9,8 +9,7 @@ use crate::message::ProtocolMessage;
 /// cannot reveal Layer 0 topology.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
-    async fn send(&self, target: &NodeId, message: &ProtocolMessage)
-        -> Result<(), TransportError>;
+    async fn send(&self, target: &NodeId, message: &ProtocolMessage) -> Result<(), TransportError>;
 
     async fn recv(&self) -> Result<(NodeId, ProtocolMessage), TransportError>;
 

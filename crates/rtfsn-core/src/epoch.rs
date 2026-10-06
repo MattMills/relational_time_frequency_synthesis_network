@@ -49,8 +49,7 @@ impl EpochManager {
 
     /// Try to advance the phase. Returns true if we advanced.
     pub fn try_advance(&mut self, current_time_nanos: u64) -> bool {
-        let timed_out =
-            current_time_nanos - self.phase_start_time > self.phase_timeout_nanos;
+        let timed_out = current_time_nanos - self.phase_start_time > self.phase_timeout_nanos;
 
         match self.current_phase {
             EpochPhase::Measure => {
@@ -69,9 +68,7 @@ impl EpochManager {
             }
             EpochPhase::Publish => {
                 // Advance to next epoch when quorum reached or timeout
-                if self.received_beacons.len() >= self.quorum_threshold
-                    || timed_out
-                {
+                if self.received_beacons.len() >= self.quorum_threshold || timed_out {
                     self.current_epoch = self.current_epoch.next();
                     self.current_phase = EpochPhase::Measure;
                     self.received_beacons.clear();

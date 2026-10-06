@@ -15,17 +15,10 @@ pub struct TwistIndex {
 }
 
 impl TwistIndex {
-    pub fn from_exchange(
-        t1_nanos: u64,
-        t2_nanos: u64,
-        t3_nanos: u64,
-        t4_nanos: u64,
-    ) -> Self {
-        let rtt = (t4_nanos.wrapping_sub(t1_nanos))
-            .wrapping_sub(t3_nanos.wrapping_sub(t2_nanos));
-        let offset = ((t2_nanos as i128 - t1_nanos as i128)
-            + (t3_nanos as i128 - t4_nanos as i128))
-            / 2;
+    pub fn from_exchange(t1_nanos: u64, t2_nanos: u64, t3_nanos: u64, t4_nanos: u64) -> Self {
+        let rtt = (t4_nanos.wrapping_sub(t1_nanos)).wrapping_sub(t3_nanos.wrapping_sub(t2_nanos));
+        let offset =
+            ((t2_nanos as i128 - t1_nanos as i128) + (t3_nanos as i128 - t4_nanos as i128)) / 2;
         let forward = t2_nanos as i128 - t1_nanos as i128;
         let backward = t4_nanos as i128 - t3_nanos as i128;
         let asymmetry = forward - backward;
@@ -63,11 +56,7 @@ impl TwistLUT {
     }
 
     fn edge_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
-        if a.0 < b.0 {
-            (a, b)
-        } else {
-            (b, a)
-        }
+        if a.0 < b.0 { (a, b) } else { (b, a) }
     }
 
     pub fn insert(&mut self, a: NodeId, b: NodeId, twist: TwistIndex) {
@@ -134,8 +123,7 @@ impl TwistLUT {
         }
 
         // Compute mean
-        let mean = twists.iter().map(|t| t.rtt_nanos as i64).sum::<i64>()
-            / twists.len() as i64;
+        let mean = twists.iter().map(|t| t.rtt_nanos as i64).sum::<i64>() / twists.len() as i64;
 
         // Compute variance
         let variance = twists
@@ -148,8 +136,7 @@ impl TwistLUT {
             / twists.len() as i64;
 
         // Compute percentiles (sort RTTs)
-        let mut rtts: Vec<i64> =
-            twists.iter().map(|t| t.rtt_nanos as i64).collect();
+        let mut rtts: Vec<i64> = twists.iter().map(|t| t.rtt_nanos as i64).collect();
         rtts.sort_unstable();
         let p10 = rtts[rtts.len() / 10];
         let p50 = rtts[rtts.len() / 2];
@@ -158,10 +145,8 @@ impl TwistLUT {
         // Compute trend using linear regression on epoch_measured vs rtt
         let trend = if twists.len() >= 2 {
             let n = twists.len() as i64;
-            let sum_x: i64 =
-                twists.iter().map(|t| t.epoch_measured as i64).sum();
-            let sum_y: i64 =
-                twists.iter().map(|t| t.rtt_nanos as i64).sum();
+            let sum_x: i64 = twists.iter().map(|t| t.epoch_measured as i64).sum();
+            let sum_y: i64 = twists.iter().map(|t| t.rtt_nanos as i64).sum();
             let sum_xy: i64 = twists
                 .iter()
                 .map(|t| t.epoch_measured as i64 * t.rtt_nanos as i64)
@@ -180,10 +165,8 @@ impl TwistLUT {
             0
         };
 
-        let epoch_first =
-            twists.first().map(|t| t.epoch_measured).unwrap_or(0);
-        let epoch_last =
-            twists.last().map(|t| t.epoch_measured).unwrap_or(0);
+        let epoch_first = twists.first().map(|t| t.epoch_measured).unwrap_or(0);
+        let epoch_last = twists.last().map(|t| t.epoch_measured).unwrap_or(0);
 
         Some(RelationalLatencyProfile {
             mean_nanos: mean,
@@ -236,27 +219,39 @@ mod tests {
         let c = NodeId([3u8; 32]);
 
         // Consistent triangle: a→b = +1ms, b→c = +2ms, c→a = -3ms
-        lut.insert(a, b, TwistIndex {
-            rtt_nanos: 10_000_000,
-            offset_nanos: 1_000_000,
-            asymmetry_nanos: 0,
-            quality: 100,
-            epoch_measured: 1,
-        });
-        lut.insert(b, c, TwistIndex {
-            rtt_nanos: 10_000_000,
-            offset_nanos: 2_000_000,
-            asymmetry_nanos: 0,
-            quality: 100,
-            epoch_measured: 1,
-        });
-        lut.insert(a, c, TwistIndex {
-            rtt_nanos: 10_000_000,
-            offset_nanos: 3_000_000,
-            asymmetry_nanos: 0,
-            quality: 100,
-            epoch_measured: 1,
-        });
+        lut.insert(
+            a,
+            b,
+            TwistIndex {
+                rtt_nanos: 10_000_000,
+                offset_nanos: 1_000_000,
+                asymmetry_nanos: 0,
+                quality: 100,
+                epoch_measured: 1,
+            },
+        );
+        lut.insert(
+            b,
+            c,
+            TwistIndex {
+                rtt_nanos: 10_000_000,
+                offset_nanos: 2_000_000,
+                asymmetry_nanos: 0,
+                quality: 100,
+                epoch_measured: 1,
+            },
+        );
+        lut.insert(
+            a,
+            c,
+            TwistIndex {
+                rtt_nanos: 10_000_000,
+                offset_nanos: 3_000_000,
+                asymmetry_nanos: 0,
+                quality: 100,
+                epoch_measured: 1,
+            },
+        );
 
         let holonomy = lut.loop_holonomy(&[a, b, c]).unwrap();
         // Consistent: a→b(+1) + b→c(+2) + c→a(-3) = 0
@@ -271,8 +266,8 @@ mod tests {
 
         // Add multiple measurements with increasing RTT (trend > 0)
         let rtts: &[u64] = &[
-            10_000_000, 12_000_000, 14_000_000, 16_000_000, 18_000_000,
-            20_000_000, 22_000_000, 24_000_000, 26_000_000, 28_000_000,
+            10_000_000, 12_000_000, 14_000_000, 16_000_000, 18_000_000, 20_000_000, 22_000_000,
+            24_000_000, 26_000_000, 28_000_000,
         ];
         for (i, &rtt) in rtts.iter().enumerate() {
             lut.insert(

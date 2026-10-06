@@ -86,8 +86,7 @@ pub fn valve_l1_to_l2(
     }
 
     for (grid_key, offsets) in &clusters {
-        let region_coords: Vec<f64> =
-            grid_key.iter().map(|g| *g as f64 * grid_size).collect();
+        let region_coords: Vec<f64> = grid_key.iter().map(|g| *g as f64 * grid_size).collect();
         let cluster_id = ClusterId::from_region(&region_coords, epoch);
         l2_aggregator.aggregate(cluster_id, epoch, offsets);
     }
@@ -114,8 +113,7 @@ pub fn valve_l2_to_l3(
     // the Pedersen commitments. For now, we accept the cluster
     // data and produce a clock tick.
 
-    let total_weight: f64 =
-        clusters.iter().map(|c| c.cluster_size as f64).sum();
+    let total_weight: f64 = clusters.iter().map(|c| c.cluster_size as f64).sum();
     if total_weight < 1.0 {
         return false;
     }
@@ -130,12 +128,7 @@ pub fn valve_l2_to_l3(
 
     let confidence_nanos = 5_000_000; // 5ms placeholder
 
-    clock_stream.emit(
-        reference_time_nanos,
-        confidence_nanos,
-        epoch_hash,
-        None,
-    );
+    clock_stream.emit(reference_time_nanos, confidence_nanos, epoch_hash, None);
 
     true
 }
@@ -152,14 +145,10 @@ pub fn valve_l0_to_l1_with_geoid(
 ) -> Option<Layer1Beacon> {
     let mut beacon = valve_l0_to_l1(store, epoch, blinding_secret)?;
     if let Some(g) = geoid {
-        let coord = crate::geoid::embedding::GeoidCoordinate::from_vivaldi(
-            &beacon.coordinates.position,
-            g,
-        );
+        let coord =
+            crate::geoid::embedding::GeoidCoordinate::from_vivaldi(&beacon.coordinates.position, g);
         let (committed, _blindings) =
-            crate::geoid::embedding::CommittedGeoidCoordinate::from_coordinate(
-                &coord,
-            );
+            crate::geoid::embedding::CommittedGeoidCoordinate::from_coordinate(&coord);
         beacon.geoid_coord = Some(committed);
     }
     Some(beacon)
@@ -228,9 +217,7 @@ fn compute_hint_priority(residual_nanos: u64, level: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layers::layer0::{
-        Layer0Store, LocalSolve, MeasurementRecord,
-    };
+    use crate::layers::layer0::{Layer0Store, LocalSolve, MeasurementRecord};
     use crate::sync::clock::TimeExchange;
     use crate::sync::geometry::CoordinateState;
     use crate::types::NodeId;
@@ -280,13 +267,7 @@ mod tests {
 
         // Valve L2 → L3
         let mut clock = ClockStream::new();
-        let emitted = valve_l2_to_l3(
-            &l2,
-            &mut clock,
-            epoch,
-            1_000_000_000,
-            1,
-        );
+        let emitted = valve_l2_to_l3(&l2, &mut clock, epoch, 1_000_000_000, 1);
         assert!(emitted);
         assert_eq!(clock.len(), 2); // genesis + 1 tick
         assert!(clock.verify_all());

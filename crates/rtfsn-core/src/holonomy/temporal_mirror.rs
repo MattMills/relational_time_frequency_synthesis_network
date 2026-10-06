@@ -40,10 +40,8 @@ impl TemporalMirror {
         }
 
         // Weighted mean of forward estimates
-        let fwd_mean =
-            forward_estimates.iter().sum::<i64>() / forward_estimates.len() as i64;
-        let bwd_mean =
-            backward_estimates.iter().sum::<i64>() / backward_estimates.len() as i64;
+        let fwd_mean = forward_estimates.iter().sum::<i64>() / forward_estimates.len() as i64;
+        let bwd_mean = backward_estimates.iter().sum::<i64>() / backward_estimates.len() as i64;
 
         let mut predictive = fwd_mean;
         let mut retrodictive = bwd_mean;
@@ -57,10 +55,8 @@ impl TemporalMirror {
 
             // Adjust each mirror toward midpoint with damping
             let alpha = 0.5;
-            predictive = predictive
-                + ((midpoint - predictive) as f64 * alpha) as i64;
-            retrodictive = retrodictive
-                + ((midpoint - retrodictive) as f64 * alpha) as i64;
+            predictive = predictive + ((midpoint - predictive) as f64 * alpha) as i64;
+            retrodictive = retrodictive + ((midpoint - retrodictive) as f64 * alpha) as i64;
 
             let disagreement = (predictive - retrodictive).unsigned_abs();
             if disagreement < 1000 {
@@ -118,8 +114,7 @@ impl EpochBoundarySolver {
             .iter()
             .zip(node_drifts_ppb.iter())
             .map(|(&offset, &drift)| {
-                prev_time_nanos as i64 + dt + offset
-                    + (drift * dt) / 1_000_000_000
+                prev_time_nanos as i64 + dt + offset + (drift * dt) / 1_000_000_000
             })
             .collect();
 
@@ -127,13 +122,10 @@ impl EpochBoundarySolver {
         // (estimate where the boundary "should" be given the offsets)
         let backward: Vec<i64> = node_offsets
             .iter()
-            .map(|&offset| {
-                prev_time_nanos as i64 + dt + offset
-            })
+            .map(|&offset| prev_time_nanos as i64 + dt + offset)
             .collect();
 
-        let mirror =
-            TemporalMirror::find_fixed_point(&forward, &backward, 50);
+        let mirror = TemporalMirror::find_fixed_point(&forward, &backward, 50);
         self.mirrors.push(mirror);
         self.mirrors.last().unwrap()
     }
@@ -152,8 +144,7 @@ mod tests {
         let forward = vec![1_000_000_000, 1_000_001_000, 999_999_000];
         let backward = vec![1_000_000_500, 1_000_000_200, 999_999_800];
 
-        let mirror =
-            TemporalMirror::find_fixed_point(&forward, &backward, 100);
+        let mirror = TemporalMirror::find_fixed_point(&forward, &backward, 100);
         assert!(
             mirror.is_consistent(1_000),
             "disagreement={}",

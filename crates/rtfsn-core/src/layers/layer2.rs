@@ -69,33 +69,26 @@ impl ClusterAggregator {
         use curve25519_dalek::scalar::Scalar;
 
         let mean = offsets.iter().sum::<f64>() / offsets.len() as f64;
-        let variance = offsets.iter().map(|o| (o - mean).powi(2)).sum::<f64>()
-            / offsets.len() as f64;
+        let variance =
+            offsets.iter().map(|o| (o - mean).powi(2)).sum::<f64>() / offsets.len() as f64;
 
         let mut blinding_bytes = [0u8; 64];
         rand::fill(&mut blinding_bytes);
         let blinding = Scalar::from_bytes_mod_order_wide(&blinding_bytes);
 
-        let offset_commitment =
-            PedersenCommitment::commit_f64(mean, &blinding);
+        let offset_commitment = PedersenCommitment::commit_f64(mean, &blinding);
 
         let mut var_blinding_bytes = [0u8; 64];
         rand::fill(&mut var_blinding_bytes);
-        let var_blinding =
-            Scalar::from_bytes_mod_order_wide(&var_blinding_bytes);
+        let var_blinding = Scalar::from_bytes_mod_order_wide(&var_blinding_bytes);
 
-        let variance_commitment =
-            PedersenCommitment::commit_f64(variance, &var_blinding);
+        let variance_commitment = PedersenCommitment::commit_f64(variance, &var_blinding);
 
         let entry = Layer2Entry {
             cluster_id,
             epoch,
-            committed_offset: SerializableCommitment::from(
-                &offset_commitment,
-            ),
-            committed_variance: SerializableCommitment::from(
-                &variance_commitment,
-            ),
+            committed_offset: SerializableCommitment::from(&offset_commitment),
+            committed_variance: SerializableCommitment::from(&variance_commitment),
             cluster_size: offsets.len() as u32,
             agreement_proofs: Vec::new(),
         };
