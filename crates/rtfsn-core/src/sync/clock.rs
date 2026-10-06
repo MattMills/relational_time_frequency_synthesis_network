@@ -96,8 +96,7 @@ impl ClockState {
         // Weighted linear regression: offset = a + b*time
         let total_weight: f64 = self.samples.iter().map(|s| s.weight).sum();
         let mean_t: f64 =
-            self.samples.iter().map(|s| s.weight * s.time).sum::<f64>()
-                / total_weight;
+            self.samples.iter().map(|s| s.weight * s.time).sum::<f64>() / total_weight;
         let mean_o: f64 = self
             .samples
             .iter()
@@ -130,8 +129,7 @@ impl ClockState {
             let residual = s.offset - predicted;
             ss_residual += s.weight * residual * residual;
         }
-        self.uncertainty =
-            (ss_residual / total_weight).sqrt().max(1e-9);
+        self.uncertainty = (ss_residual / total_weight).sqrt().max(1e-9);
     }
 
     pub fn predict(&self, time: f64) -> f64 {

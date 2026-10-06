@@ -10,7 +10,7 @@ use rtfsn_core::holonomy::temporal_mirror::EpochBoundarySolver;
 use rtfsn_core::holonomy::twist::TwistIndex;
 use rtfsn_core::layers::layer3::ClockStream;
 use rtfsn_core::sync::kalman::ClockKalman;
-use rtfsn_core::sync::outlier::{marzullo, TimeInterval};
+use rtfsn_core::sync::outlier::{TimeInterval, marzullo};
 use rtfsn_core::types::NodeId;
 
 // ---------------------------------------------------------------------------
@@ -60,8 +60,7 @@ impl SimNetwork {
         let backward_delay = base_lat as f64 + jitter.sample(rng).abs();
 
         let t1 = self.nodes[a].local_time_nanos(real_time_nanos) as u64;
-        let t2 = (self.nodes[b].local_time_nanos(real_time_nanos) as f64
-            + forward_delay) as u64;
+        let t2 = (self.nodes[b].local_time_nanos(real_time_nanos) as f64 + forward_delay) as u64;
         let processing = 100_000; // 100μs
         let t3 = t2 + processing;
         let t4 = (self.nodes[a].local_time_nanos(real_time_nanos) as f64
@@ -123,10 +122,8 @@ fn build_network(cfg: &SimConfig, rng: &mut impl Rng) -> SimNetwork {
         rand::fill(&mut id_bytes[2..]);
 
         let offset_nanos =
-            (rng.random_range(-cfg.max_offset_ms..cfg.max_offset_ms)
-                * 1_000_000.0) as i64;
-        let drift_ppb =
-            rng.random_range(-cfg.max_drift_ppb..=cfg.max_drift_ppb);
+            (rng.random_range(-cfg.max_offset_ms..cfg.max_offset_ms) * 1_000_000.0) as i64;
+        let drift_ppb = rng.random_range(-cfg.max_drift_ppb..=cfg.max_drift_ppb);
 
         nodes.push(SimNode {
             id: NodeId(id_bytes),
@@ -140,13 +137,11 @@ fn build_network(cfg: &SimConfig, rng: &mut impl Rng) -> SimNetwork {
     }
 
     // Synthetic latency matrix
-    let mut base_latencies =
-        vec![vec![0u64; cfg.num_nodes]; cfg.num_nodes];
+    let mut base_latencies = vec![vec![0u64; cfg.num_nodes]; cfg.num_nodes];
     for i in 0..cfg.num_nodes {
         for j in (i + 1)..cfg.num_nodes {
-            let lat = (cfg.base_latency_ms
-                + rng.random_range(0.0..cfg.latency_spread_ms))
-                * 1_000_000.0;
+            let lat =
+                (cfg.base_latency_ms + rng.random_range(0.0..cfg.latency_spread_ms)) * 1_000_000.0;
             let lat_nanos = lat.max(1_000_000.0) as u64;
             base_latencies[i][j] = lat_nanos;
             base_latencies[j][i] = lat_nanos;
@@ -165,14 +160,9 @@ fn build_network(cfg: &SimConfig, rng: &mut impl Rng) -> SimNetwork {
         let near = k * 3 / 4;
         let far = k - near;
 
-        let mut peers: Vec<usize> =
-            candidates.iter().take(near).map(|&(j, _)| j).collect();
+        let mut peers: Vec<usize> = candidates.iter().take(near).map(|&(j, _)| j).collect();
 
-        let remaining: Vec<usize> = candidates
-            .iter()
-            .skip(near)
-            .map(|&(j, _)| j)
-            .collect();
+        let remaining: Vec<usize> = candidates.iter().skip(near).map(|&(j, _)| j).collect();
         for _ in 0..far.min(remaining.len()) {
             let idx = rng.random_range(0..remaining.len());
             if !peers.contains(&remaining[idx]) {
@@ -239,14 +229,38 @@ fn main() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  RTFSN Distributed Clock Simulation                    ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  Nodes:            {:>6}                               ║", cfg.num_nodes);
-    println!("║  Peers/node:       {:>6}                               ║", cfg.peers_per_node);
-    println!("║  Max offset:    {:>+8.1} ms                            ║", cfg.max_offset_ms);
-    println!("║  Max drift:     {:>+8} ppb                            ║", cfg.max_drift_ppb);
-    println!("║  Base latency:  {:>8.1} ms                            ║", cfg.base_latency_ms);
-    println!("║  Jitter stddev: {:>8.1} ms                            ║", cfg.jitter_ms);
-    println!("║  Epochs:            {:>6}                               ║", cfg.num_epochs);
-    println!("║  Exchanges/epoch:   {:>6}                               ║", cfg.exchanges_per_epoch);
+    println!(
+        "║  Nodes:            {:>6}                               ║",
+        cfg.num_nodes
+    );
+    println!(
+        "║  Peers/node:       {:>6}                               ║",
+        cfg.peers_per_node
+    );
+    println!(
+        "║  Max offset:    {:>+8.1} ms                            ║",
+        cfg.max_offset_ms
+    );
+    println!(
+        "║  Max drift:     {:>+8} ppb                            ║",
+        cfg.max_drift_ppb
+    );
+    println!(
+        "║  Base latency:  {:>8.1} ms                            ║",
+        cfg.base_latency_ms
+    );
+    println!(
+        "║  Jitter stddev: {:>8.1} ms                            ║",
+        cfg.jitter_ms
+    );
+    println!(
+        "║  Epochs:            {:>6}                               ║",
+        cfg.num_epochs
+    );
+    println!(
+        "║  Exchanges/epoch:   {:>6}                               ║",
+        cfg.exchanges_per_epoch
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 
@@ -259,8 +273,7 @@ fn main() {
         .map(|n| n.true_offset_nanos as f64 / 1_000_000.0)
         .collect();
     initial_offsets.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let initial_spread =
-        initial_offsets.last().unwrap() - initial_offsets.first().unwrap();
+    let initial_spread = initial_offsets.last().unwrap() - initial_offsets.first().unwrap();
     println!(
         "Initial clock spread: {:.1} ms  (min={:.1} ms, max={:.1} ms)",
         initial_spread,
@@ -269,12 +282,10 @@ fn main() {
     );
 
     // Print peer connectivity stats
-    let peer_counts: Vec<usize> =
-        net.nodes.iter().map(|n| n.peers.len()).collect();
+    let peer_counts: Vec<usize> = net.nodes.iter().map(|n| n.peers.len()).collect();
     let min_peers = *peer_counts.iter().min().unwrap();
     let max_peers = *peer_counts.iter().max().unwrap();
-    let avg_peers =
-        peer_counts.iter().sum::<usize>() as f64 / peer_counts.len() as f64;
+    let avg_peers = peer_counts.iter().sum::<usize>() as f64 / peer_counts.len() as f64;
     println!(
         "Peer connectivity: min={}, avg={:.1}, max={}",
         min_peers, avg_peers, max_peers,
@@ -283,14 +294,20 @@ fn main() {
 
     let epoch_duration_nanos: i64 = 30_000_000_000; // 30s
     let mut clock_stream = ClockStream::new();
-    let mut epoch_boundary =
-        EpochBoundarySolver::new(epoch_duration_nanos as u64);
+    let mut epoch_boundary = EpochBoundarySolver::new(epoch_duration_nanos as u64);
     let mut all_stats: Vec<EpochStats> = Vec::new();
 
     println!(
         "{:>5} {:>12} {:>12} {:>12} {:>12} {:>12} {:>10} {:>5} {:>4}",
-        "Epoch", "Max(μs)", "Mean(μs)", "Med(μs)", "P95(μs)", "P99(μs)",
-        "Defect(μs)", "Iter", "Out",
+        "Epoch",
+        "Max(μs)",
+        "Mean(μs)",
+        "Med(μs)",
+        "P95(μs)",
+        "P99(μs)",
+        "Defect(μs)",
+        "Iter",
+        "Out",
     );
     println!("{}", "-".repeat(100));
 
@@ -305,8 +322,7 @@ fn main() {
             let peers = net.nodes[i].peers.clone();
             for &j in &peers {
                 for _ in 0..cfg.exchanges_per_epoch {
-                    let twist =
-                        net.simulate_exchange(&mut rng, i, j, real_time);
+                    let twist = net.simulate_exchange(&mut rng, i, j, real_time);
                     all_twists.push((i, j, twist));
                 }
             }
@@ -314,8 +330,7 @@ fn main() {
 
         // ── Phase 2: Solve (holonomy) ─────────────────────────────
         // Pick the best (lowest-RTT) twist per edge
-        let mut best_twists: HashMap<(usize, usize), TwistIndex> =
-            HashMap::new();
+        let mut best_twists: HashMap<(usize, usize), TwistIndex> = HashMap::new();
         for &(i, j, ref twist) in &all_twists {
             let key = if i < j { (i, j) } else { (j, i) };
             let is_better = best_twists
@@ -331,32 +346,26 @@ fn main() {
         for node in net.nodes.iter() {
             let seed = node.last_solved_offset_nanos;
             let drift_est = (node.kalman.drift_rate() * 1e9) as i64;
-            solver.add_node(
-                node.id,
-                ChiralFrame::new(seed, drift_est, 100),
-            );
+            solver.add_node(node.id, ChiralFrame::new(seed, drift_est, 100));
         }
 
         for (&(i, j), twist) in &best_twists {
-            solver.add_measurement(
-                net.nodes[i].id,
-                net.nodes[j].id,
-                twist.clone(),
-            );
+            solver.add_measurement(net.nodes[i].id, net.nodes[j].id, twist.clone());
         }
 
-        let solve_result =
-            solver.solve(cfg.solver_iterations, cfg.solver_tolerance_nanos);
+        let solve_result = solver.solve(cfg.solver_iterations, cfg.solver_tolerance_nanos);
 
         // Store solved offsets back into nodes & feed into Kalman
-        let dt =
-            if epoch == 0 { 1.0 } else { epoch_duration_nanos as f64 / 1e9 };
+        let dt = if epoch == 0 {
+            1.0
+        } else {
+            epoch_duration_nanos as f64 / 1e9
+        };
         for node in &mut net.nodes {
             if let Some(frame) = solver.nodes.get(&node.id) {
                 node.last_solved_offset_nanos = frame.offset_nanos;
                 let solved_secs = frame.offset_nanos as f64 / 1e9;
-                let measurement_var = (solve_result.mean_defect_nanos as f64
-                    / 1e9)
+                let measurement_var = (solve_result.mean_defect_nanos as f64 / 1e9)
                     .powi(2)
                     .max(1e-12);
                 node.kalman.step(dt, solved_secs, measurement_var);
@@ -405,16 +414,10 @@ fn main() {
         let _marzullo_result = marzullo(&intervals);
 
         // ── Phase 3: Emit clock tick ──────────────────────────────
-        let node_offsets: Vec<i64> =
-            solver.nodes.values().map(|f| f.offset_nanos).collect();
-        let node_drifts: Vec<i64> =
-            solver.nodes.values().map(|f| f.drift_ppb).collect();
+        let node_offsets: Vec<i64> = solver.nodes.values().map(|f| f.offset_nanos).collect();
+        let node_drifts: Vec<i64> = solver.nodes.values().map(|f| f.drift_ppb).collect();
 
-        let mirror = epoch_boundary.solve_boundary(
-            &node_offsets,
-            &node_drifts,
-            real_time as u64,
-        );
+        let mirror = epoch_boundary.solve_boundary(&node_offsets, &node_drifts, real_time as u64);
         let epoch_hash = {
             let mut h = blake3::Hasher::new();
             for offset in &node_offsets {
@@ -445,10 +448,8 @@ fn main() {
             })
             .collect();
         let n = pairs.len() as f64;
-        let true_mean =
-            pairs.iter().map(|(t, _)| *t as f64).sum::<f64>() / n;
-        let solved_mean =
-            pairs.iter().map(|(_, s)| *s as f64).sum::<f64>() / n;
+        let true_mean = pairs.iter().map(|(t, _)| *t as f64).sum::<f64>() / n;
+        let solved_mean = pairs.iter().map(|(_, s)| *s as f64).sum::<f64>() / n;
 
         let mut errors_us: Vec<f64> = pairs
             .iter()
@@ -463,13 +464,11 @@ fn main() {
         let stats = EpochStats {
             epoch,
             max_error_us: errors_us.last().copied().unwrap_or(0.0),
-            mean_error_us: errors_us.iter().sum::<f64>()
-                / errors_us.len().max(1) as f64,
+            mean_error_us: errors_us.iter().sum::<f64>() / errors_us.len().max(1) as f64,
             median_error_us: percentile(&errors_us, 0.5),
             p95_error_us: percentile(&errors_us, 0.95),
             p99_error_us: percentile(&errors_us, 0.99),
-            solver_max_defect_us: solve_result.max_defect_nanos as f64
-                / 1_000.0,
+            solver_max_defect_us: solve_result.max_defect_nanos as f64 / 1_000.0,
             solver_converged: solve_result.converged,
             solver_iterations: solve_result.iterations,
             outliers_detected: defective.len(),
@@ -513,9 +512,7 @@ fn main() {
     );
     println!(
         "║  Epoch {:>2} → max: {:>10.1} μs  mean: {:>10.1} μs      ║",
-        first_real.epoch,
-        first_real.max_error_us,
-        first_real.mean_error_us,
+        first_real.epoch, first_real.max_error_us, first_real.mean_error_us,
     );
     println!(
         "║  Epoch {:>2} → max: {:>10.1} μs  mean: {:>10.1} μs      ║",
@@ -532,8 +529,7 @@ fn main() {
         reduction,
     );
 
-    let converged_count =
-        all_stats.iter().filter(|s| s.solver_converged).count();
+    let converged_count = all_stats.iter().filter(|s| s.solver_converged).count();
     println!(
         "║  Solver converged:     {}/{} epochs                    ║",
         converged_count, cfg.num_epochs,
@@ -546,8 +542,7 @@ fn main() {
         if chain_valid { "yes" } else { " no" },
     );
 
-    let samr_codes: Vec<u64> =
-        net.nodes.iter().map(|n| n.samr.crt_decode()).collect();
+    let samr_codes: Vec<u64> = net.nodes.iter().map(|n| n.samr.crt_decode()).collect();
     let unique_samr = {
         let mut s = samr_codes.clone();
         s.sort();
@@ -564,9 +559,7 @@ fn main() {
     // Best epoch
     let best = all_stats
         .iter()
-        .min_by(|a, b| {
-            a.mean_error_us.partial_cmp(&b.mean_error_us).unwrap()
-        })
+        .min_by(|a, b| a.mean_error_us.partial_cmp(&b.mean_error_us).unwrap())
         .unwrap();
     println!();
     println!(
@@ -603,8 +596,7 @@ fn main() {
         .enumerate()
         .map(|(i, node)| {
             let tc = node.true_offset_nanos as f64 - final_true_mean;
-            let sc =
-                node.last_solved_offset_nanos as f64 - final_solved_mean;
+            let sc = node.last_solved_offset_nanos as f64 - final_solved_mean;
             let err_us = (tc - sc).abs() / 1_000.0;
             (i, err_us)
         })

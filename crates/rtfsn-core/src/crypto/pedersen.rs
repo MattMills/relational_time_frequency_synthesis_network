@@ -7,7 +7,9 @@ use sha2::{Digest, Sha512};
 fn h_generator() -> RistrettoPoint {
     let hash = Sha512::digest(b"rtfsn_pedersen_h_generator_v1");
     RistrettoPoint::from_uniform_bytes(
-        hash.as_slice().try_into().expect("SHA-512 produces 64 bytes"),
+        hash.as_slice()
+            .try_into()
+            .expect("SHA-512 produces 64 bytes"),
     )
 }
 
@@ -86,8 +88,7 @@ impl RangeProof {
         hasher.update(&value.to_le_bytes());
         let challenge_hash = hasher.finalize();
 
-        let challenge_scalar =
-            Scalar::from_bytes_mod_order(*challenge_hash.as_bytes());
+        let challenge_scalar = Scalar::from_bytes_mod_order(*challenge_hash.as_bytes());
         let response = blinding - challenge_scalar * Scalar::from(value);
 
         Some(Self {

@@ -17,10 +17,7 @@ pub struct UdpTransport {
 }
 
 impl UdpTransport {
-    pub async fn bind(
-        addr: SocketAddr,
-        local_node_id: NodeId,
-    ) -> Result<Self, TransportError> {
+    pub async fn bind(addr: SocketAddr, local_node_id: NodeId) -> Result<Self, TransportError> {
         let socket = UdpSocket::bind(addr)
             .await
             .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
@@ -32,11 +29,7 @@ impl UdpTransport {
         })
     }
 
-    pub async fn register_peer(
-        &self,
-        node_id: NodeId,
-        addr: SocketAddr,
-    ) {
+    pub async fn register_peer(&self, node_id: NodeId, addr: SocketAddr) {
         self.peer_addrs.lock().await.insert(node_id, addr);
     }
 
@@ -62,9 +55,7 @@ impl UdpTransport {
         Ok(())
     }
 
-    pub async fn recv(
-        &self,
-    ) -> Result<(SocketAddr, ProtocolMessage), TransportError> {
+    pub async fn recv(&self) -> Result<(SocketAddr, ProtocolMessage), TransportError> {
         let mut buf = vec![0u8; 65536];
         let (len, addr) = self
             .socket

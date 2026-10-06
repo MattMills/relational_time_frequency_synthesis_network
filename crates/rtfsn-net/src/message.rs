@@ -92,8 +92,12 @@ pub enum ProtocolMessage {
     },
 
     /// Ping/pong for liveness
-    Ping { nonce: u64 },
-    Pong { nonce: u64 },
+    Ping {
+        nonce: u64,
+    },
+    Pong {
+        nonce: u64,
+    },
 
     /// Peer discovery. Sent by new nodes to bootstrap peers.
     /// listen_port lets the receiver know where to send future messages.

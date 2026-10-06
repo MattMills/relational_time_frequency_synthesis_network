@@ -27,9 +27,7 @@ impl LayerStorage {
     }
 
     pub fn put(&mut self, key: [u8; 32], value: StoredValue) -> bool {
-        if self.store.len() >= self.max_entries
-            && !self.store.contains_key(&key)
-        {
+        if self.store.len() >= self.max_entries && !self.store.contains_key(&key) {
             self.evict_oldest();
         }
         self.store.insert(key, value);
@@ -53,9 +51,8 @@ impl LayerStorage {
     }
 
     pub fn expire(&mut self, current_epoch: u64) {
-        self.store.retain(|_, v| {
-            v.origin_epoch + v.ttl_epochs as u64 > current_epoch
-        });
+        self.store
+            .retain(|_, v| v.origin_epoch + v.ttl_epochs as u64 > current_epoch);
     }
 
     fn evict_oldest(&mut self) {
@@ -135,12 +132,15 @@ mod tests {
         for i in 0..5u8 {
             let mut key = [0u8; 32];
             key[0] = i;
-            storage.put(key, StoredValue {
-                data: vec![i],
-                timestamp: i as u64 * 100,
-                ttl_epochs: 3,
-                origin_epoch: i as u64,
-            });
+            storage.put(
+                key,
+                StoredValue {
+                    data: vec![i],
+                    timestamp: i as u64 * 100,
+                    ttl_epochs: 3,
+                    origin_epoch: i as u64,
+                },
+            );
         }
 
         assert_eq!(storage.len(), 5);

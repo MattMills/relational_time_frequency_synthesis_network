@@ -44,9 +44,7 @@ impl ClockKalman {
 
         // Covariance propagation: P = F*P*F' + Q
         // F = [[1, dt], [0, 1]]
-        let p00 = self.p[0] + 2.0 * dt * self.p[1]
-            + dt * dt * self.p[2]
-            + self.q_offset * dt;
+        let p00 = self.p[0] + 2.0 * dt * self.p[1] + dt * dt * self.p[2] + self.q_offset * dt;
         let p01 = self.p[1] + dt * self.p[2];
         let p11 = self.p[2] + self.q_drift * dt;
 
@@ -81,12 +79,7 @@ impl ClockKalman {
     }
 
     /// Combined predict + update for a measurement at the given time delta.
-    pub fn step(
-        &mut self,
-        dt: f64,
-        measured_offset: f64,
-        measurement_variance: f64,
-    ) {
+    pub fn step(&mut self, dt: f64, measured_offset: f64, measurement_variance: f64) {
         self.predict(dt);
         self.update(measured_offset, measurement_variance);
     }

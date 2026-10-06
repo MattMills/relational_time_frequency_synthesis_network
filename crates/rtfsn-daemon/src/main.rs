@@ -196,8 +196,10 @@ impl NodeState {
     }
 
     fn solve_and_advance(&mut self, epoch: Epoch) -> SolveOutput {
-        let current_secs =
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+        let current_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
         let dt = if self.last_epoch_start_secs < 1.0 {
             self.epoch_duration_secs
         } else {
@@ -291,18 +293,11 @@ impl NodeState {
             .raw_exchanges
             .iter()
             .map(|(peer_id, t1, t2, t3, t4)| {
-                let rtt_secs = (*t4 as f64 - *t1 as f64) / 1e9
-                    - (*t3 as f64 - *t2 as f64) / 1e9;
-                let offset_s = ((*t2 as f64 - *t1 as f64)
-                    + (*t3 as f64 - *t4 as f64))
-                    / 2.0;
+                let rtt_secs = (*t4 as f64 - *t1 as f64) / 1e9 - (*t3 as f64 - *t2 as f64) / 1e9;
+                let offset_s = ((*t2 as f64 - *t1 as f64) + (*t3 as f64 - *t4 as f64)) / 2.0;
                 // Construct synthetic TimeExchange that produces the same offset/RTT
-                let exchange = TimeExchange::new(
-                    0.0,
-                    rtt_secs / 2.0 + offset_s,
-                    rtt_secs / 2.0,
-                    rtt_secs,
-                );
+                let exchange =
+                    TimeExchange::new(0.0, rtt_secs / 2.0 + offset_s, rtt_secs / 2.0, rtt_secs);
                 MeasurementRecord {
                     peer: *peer_id,
                     exchange,
@@ -314,7 +309,8 @@ impl NodeState {
 
         // Also update clock_state with each exchange
         for record in &measurements {
-            self.clock_state.add_exchange(&record.exchange, current_secs);
+            self.clock_state
+                .add_exchange(&record.exchange, current_secs);
         }
 
         let solve = LocalSolve {
@@ -398,10 +394,11 @@ impl NodeState {
                     .as_ref()
                     .map(|p| (p.variance_nanos as f64).sqrt() as u64)
                     .unwrap_or(0);
-                let trend_nanos_per_epoch =
-                    profile.as_ref().map(|p| p.trend_nanos_per_epoch).unwrap_or(0);
-                let sample_count =
-                    profile.as_ref().map(|p| p.sample_count).unwrap_or(1);
+                let trend_nanos_per_epoch = profile
+                    .as_ref()
+                    .map(|p| p.trend_nanos_per_epoch)
+                    .unwrap_or(0);
+                let sample_count = profile.as_ref().map(|p| p.sample_count).unwrap_or(1);
                 Some(PeerStats {
                     peer_id,
                     peer_addr: addr,
@@ -530,8 +527,7 @@ async fn recv_loop(state: Arc<Mutex<NodeState>>, transport: Arc<UdpTransport>) {
     loop {
         match transport.recv().await {
             Ok((from_addr, msg)) => {
-                handle_message(Arc::clone(&state), Arc::clone(&transport), from_addr, msg)
-                    .await
+                handle_message(Arc::clone(&state), Arc::clone(&transport), from_addr, msg).await
             }
             Err(e) => warn!("recv: {e}"),
         }
@@ -545,7 +541,10 @@ async fn handle_message(
     msg: ProtocolMessage,
 ) {
     match msg {
-        ProtocolMessage::PeerAnnounce { node_id, listen_port } => {
+        ProtocolMessage::PeerAnnounce {
+            node_id,
+            listen_port,
+        } => {
             let listen_addr = SocketAddr::new(from_addr.ip(), listen_port);
             let (our_node_id, our_port) = {
                 let mut s = state.lock().await;
@@ -568,14 +567,18 @@ async fn handle_message(
                 .ok();
         }
 
-        ProtocolMessage::TimeRequest { sender, t1_nanos, epoch } => {
+        ProtocolMessage::TimeRequest {
+            sender,
+            t1_nanos,
+            epoch,
+        } => {
             // Record t2 IMMEDIATELY before lock
             let t2 = now_nanos();
             {
                 let mut s = state.lock().await;
-                s.peers.entry(sender).or_insert_with(|| {
-                    SocketAddr::new(from_addr.ip(), from_addr.port())
-                });
+                s.peers
+                    .entry(sender)
+                    .or_insert_with(|| SocketAddr::new(from_addr.ip(), from_addr.port()));
             }
             let t3 = now_nanos();
             let our_node_id = state.lock().await.node_id;
@@ -608,9 +611,7 @@ async fn handle_message(
             let valid = s
                 .pending_t1
                 .get(&sender)
-                .map(|(stored_t1, stored_epoch)| {
-                    *stored_t1 == t1_nanos && *stored_epoch == epoch.0
-                })
+                .map(|(stored_t1, stored_epoch)| *stored_t1 == t1_nanos && *stored_epoch == epoch.0)
                 .unwrap_or(false);
 
             if !valid {
@@ -621,16 +622,14 @@ async fn handle_message(
             s.pending_t1.remove(&sender);
 
             // Register peer addr if not already known
-            s.peers.entry(sender).or_insert_with(|| {
-                SocketAddr::new(from_addr.ip(), from_addr.port())
-            });
+            s.peers
+                .entry(sender)
+                .or_insert_with(|| SocketAddr::new(from_addr.ip(), from_addr.port()));
 
             // Compute TwistIndex from the 4 timestamps
-            let rtt = (t4.wrapping_sub(t1_nanos))
-                .wrapping_sub(t3_nanos.wrapping_sub(t2_nanos));
-            let offset = ((t2_nanos as i128 - t1_nanos as i128)
-                + (t3_nanos as i128 - t4 as i128))
-                / 2;
+            let rtt = (t4.wrapping_sub(t1_nanos)).wrapping_sub(t3_nanos.wrapping_sub(t2_nanos));
+            let offset =
+                ((t2_nanos as i128 - t1_nanos as i128) + (t3_nanos as i128 - t4 as i128)) / 2;
             let forward = t2_nanos as i128 - t1_nanos as i128;
             let backward = t4 as i128 - t3_nanos as i128;
             let asymmetry = forward - backward;
@@ -645,7 +644,8 @@ async fn handle_message(
 
             let local_id = s.node_id;
             s.twist_lut.insert(local_id, sender, twist);
-            s.raw_exchanges.push((sender, t1_nanos, t2_nanos, t3_nanos, t4));
+            s.raw_exchanges
+                .push((sender, t1_nanos, t2_nanos, t3_nanos, t4));
         }
 
         ProtocolMessage::Beacon { data, epoch } => {
@@ -684,11 +684,7 @@ async fn handle_message(
 
 // ─── epoch_loop ─────────────────────────────────────────────────────────────
 
-async fn epoch_loop(
-    state: Arc<Mutex<NodeState>>,
-    transport: Arc<UdpTransport>,
-    args: Args,
-) {
+async fn epoch_loop(state: Arc<Mutex<NodeState>>, transport: Arc<UdpTransport>, args: Args) {
     let epoch_nanos = args.epoch_duration * 1_000_000_000;
     let measure_nanos = epoch_nanos * 2 / 3;
     let publish_nanos = epoch_nanos / 6;

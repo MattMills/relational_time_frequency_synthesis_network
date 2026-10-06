@@ -89,8 +89,7 @@ impl ClockStream {
         let epoch = prev.epoch.next();
 
         // Monotonicity: never go backwards
-        let clamped_time =
-            network_time_nanos.max(prev.network_time_nanos + 1);
+        let clamped_time = network_time_nanos.max(prev.network_time_nanos + 1);
 
         let tick = ClockTick {
             epoch,

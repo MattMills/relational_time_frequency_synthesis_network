@@ -1,4 +1,3 @@
-
 use crate::types::NodeId;
 
 const K_BUCKET_SIZE: usize = 20;

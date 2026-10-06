@@ -79,10 +79,7 @@ impl Layer1Store {
         self.beacons.iter().filter(|b| b.epoch == epoch).collect()
     }
 
-    pub fn peer_coordinates(
-        &self,
-        epoch: Epoch,
-    ) -> Vec<(&CoordinateState, f64)> {
+    pub fn peer_coordinates(&self, epoch: Epoch) -> Vec<(&CoordinateState, f64)> {
         self.get_epoch(epoch)
             .into_iter()
             .map(|b| (&b.coordinates, b.clock_offset))
