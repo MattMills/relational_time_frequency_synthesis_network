@@ -360,11 +360,18 @@ pub struct Anchor {
     pub sigma_drift: f64,
     /// Its NTP stratum (1 for a primary reference).
     pub stratum: u8,
+    /// How long before this copy was handed on the reference was last measured, ns (0 straight
+    /// from a measurement). Gossip carries it, so an anchor passed around between nodes ages from
+    /// its last real measurement instead of looking fresh at every hop -- otherwise a server
+    /// nobody queries any more would circulate for ever.
+    #[serde(default)]
+    pub age_ns: u64,
 }
 
 struct HeldAnchor {
     anchor: Anchor,
-    received_ns: u64,
+    /// When the reference was last measured, on this node's clock.
+    measured_ns: u64,
     own: bool,
 }
 
@@ -462,8 +469,9 @@ impl RelationalClock {
                         sigma_offset_ns: root_distance_ns + floor as f64 / 2.0,
                         sigma_drift,
                         stratum,
+                        age_ns: 0,
                     },
-                    received_ns: now_ns,
+                    measured_ns: now_ns,
                     own: true,
                 },
             );
@@ -471,14 +479,17 @@ impl RelationalClock {
         obs
     }
 
-    /// Keep an anchor another node measured. One this node measures itself stays its own; of two
-    /// heard for the same reference within ten seconds, the tighter is kept.
+    /// Keep an anchor another node measured, heard at `now_ns`; it was measured `anchor.age_ns`
+    /// before that. One this node measures itself stays its own; of two for the same reference
+    /// the fresher is kept, and of two measured within ten seconds of each other the tighter.
     pub fn hear_anchor(&mut self, anchor: Anchor, now_ns: u64) {
+        let measured = now_ns.saturating_sub(anchor.age_ns);
         match self.anchors.get(&anchor.node) {
             Some(h) if h.own => return,
+            Some(h) if h.measured_ns > measured + 10_000_000_000 => return,
             Some(h)
                 if h.anchor.sigma_offset_ns < anchor.sigma_offset_ns
-                    && now_ns.saturating_sub(h.received_ns) < 10_000_000_000 =>
+                    && h.measured_ns + 10_000_000_000 >= measured =>
             {
                 return;
             }
@@ -487,8 +498,8 @@ impl RelationalClock {
         self.anchors.insert(
             anchor.node,
             HeldAnchor {
-                anchor,
-                received_ns: now_ns,
+                anchor: Anchor { age_ns: 0, ..anchor },
+                measured_ns: measured,
                 own: false,
             },
         );
@@ -497,6 +508,24 @@ impl RelationalClock {
     /// Every anchor known, this node's own and heard ones.
     pub fn anchors(&self) -> Vec<Anchor> {
         self.anchors.values().map(|h| h.anchor).collect()
+    }
+
+    /// Every anchor known, as handed on at `now_ns`: each carries how long ago it was measured.
+    pub fn gossip_anchors(&self, now_ns: u64) -> Vec<Anchor> {
+        self.anchors
+            .values()
+            .map(|h| Anchor {
+                age_ns: now_ns.saturating_sub(h.measured_ns),
+                ..h.anchor
+            })
+            .collect()
+    }
+
+    /// Forget anchors whose reference nobody has measured for `max_age_ns` (this node's own
+    /// included: a server that stopped answering).
+    pub fn expire_anchors(&mut self, now_ns: u64, max_age_ns: u64) {
+        self.anchors
+            .retain(|_, h| now_ns.saturating_sub(h.measured_ns) <= max_age_ns);
     }
 
     /// The anchors this node measures itself, to gossip.
@@ -539,12 +568,11 @@ impl RelationalClock {
         );
     }
 
-    /// Forget heard edges received more than `max_age_ns` before `now_ns`.
+    /// Forget heard edges received more than `max_age_ns` before `now_ns`. (Anchors age by
+    /// [`expire_anchors`](Self::expire_anchors).)
     pub fn expire(&mut self, now_ns: u64, max_age_ns: u64) {
         self.heard
             .retain(|_, h| now_ns.saturating_sub(h.received_ns) <= max_age_ns);
-        self.anchors
-            .retain(|_, h| h.own || now_ns.saturating_sub(h.received_ns) <= max_age_ns);
     }
 
     /// Every edge heard from others.
@@ -579,12 +607,18 @@ impl RelationalClock {
     pub fn solve_absolute(&self, at_ns: u64) -> Option<NetworkFrame> {
         let mut edges = self.edges();
         edges.extend(self.heard().copied());
-        let mut chosen = self.anchors();
+        // Only anchors some measurement ties to the network: one nobody has an edge to says
+        // nothing about any clock here, and would only sit in the frame looking agreed.
+        let measured: BTreeSet<NodeId> = edges.iter().flat_map(|e| [e.from, e.to]).collect();
+        let mut chosen: Vec<Anchor> = self
+            .anchors()
+            .into_iter()
+            .filter(|a| measured.contains(&a.node))
+            .collect();
         if chosen.is_empty() {
             return None;
         }
-        let mut falsetickers = Vec::new();
-        loop {
+        let solve_with = |chosen: &[Anchor]| {
             let mut all = edges.clone();
             all.extend(chosen.iter().map(|a| EdgeEstimate {
                 from: UTC,
@@ -599,7 +633,13 @@ impl RelationalClock {
                 rtt_floor_ns: 0,
                 samples: 0,
             }));
-            let mut frame = solve_frame(self.me, UTC, at_ns, &all);
+            solve_frame(self.me, UTC, at_ns, &all)
+        };
+        // Selection: an anchor whose disagreement with the rest is past its own claimed bound is
+        // a falseticker (NTP's interval test).
+        let mut falsetickers = Vec::new();
+        let mut frame = loop {
+            let frame = solve_with(&chosen);
             let worst = frame
                 .edges
                 .iter()
@@ -611,13 +651,74 @@ impl RelationalClock {
                     chosen.retain(|a| a.node != w.to);
                     falsetickers.push(w.to);
                 }
-                _ => {
-                    frame.falsetickers = falsetickers;
-                    return Some(frame);
-                }
+                _ => break frame,
             }
+        };
+        // Clustering: the bounds are worst cases (an NTP server's root distance runs to tens of
+        // ms) and pass nearly anything, so then, as ntpd's cluster algorithm does, set aside the
+        // anchor farthest from the others while it is past CLUSTER_K robust spreads of the
+        // ensemble and more than MIN_SURVIVORS remain.
+        let mut outliers = Vec::new();
+        loop {
+            let offsets: Vec<(NodeId, f64)> = chosen
+                .iter()
+                .filter_map(|a| frame.node(a.node).map(|n| (a.node, n.offset_ns)))
+                .collect();
+            let (median, spread) = robust_spread(offsets.iter().map(|x| x.1));
+            frame.selection_jitter_ns = spread;
+            if chosen.len() <= MIN_SURVIVORS {
+                break;
+            }
+            let Some(&(worst, off)) = offsets
+                .iter()
+                .max_by(|a, b| (a.1 - median).abs().total_cmp(&(b.1 - median).abs()))
+            else {
+                break;
+            };
+            if (off - median).abs() <= CLUSTER_K * spread {
+                break;
+            }
+            chosen.retain(|a| a.node != worst);
+            outliers.push(worst);
+            frame = solve_with(&chosen);
         }
+        frame.falsetickers = falsetickers;
+        frame.outliers = outliers;
+        Some(frame)
     }
+}
+
+/// Anchors kept however far apart: below this the cluster step stops.
+const MIN_SURVIVORS: usize = 3;
+/// An anchor past this many robust spreads from the ensemble's median is an outlier.
+const CLUSTER_K: f64 = 4.0;
+/// The smallest spread the cluster step assumes (references agreeing to within this are not
+/// told apart).
+const MIN_SPREAD_NS: f64 = 50_000.0;
+
+/// The median of `xs` and their robust spread (1.4826 × the median absolute deviation, a
+/// standard deviation for normal scatter that a few wild values do not inflate), floored at
+/// MIN_SPREAD_NS.
+fn robust_spread(xs: impl Iterator<Item = f64>) -> (f64, f64) {
+    let mut v: Vec<f64> = xs.collect();
+    if v.is_empty() {
+        return (0.0, MIN_SPREAD_NS);
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let n = v.len();
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2.0
+        }
+    };
+    let m = median(&mut v);
+    let mut dev: Vec<f64> = v.iter().map(|x| (x - m).abs()).collect();
+    (m, (1.4826 * median(&mut dev)).max(MIN_SPREAD_NS))
+}
+
+impl RelationalClock {
 }
 
 /// One node in a solved frame, relative to the reference.
@@ -706,9 +807,16 @@ pub struct NetworkFrame {
     pub rms_offset_ns: f64,
     /// Root mean square of the edges' relative-frequency residuals.
     pub rms_drift: f64,
-    /// Anchors set aside by clock selection in an absolute frame.
+    /// Anchors set aside by clock selection in an absolute frame: their disagreement with the
+    /// rest is past their own claimed bounds.
     #[serde(default)]
     pub falsetickers: Vec<NodeId>,
+    /// Anchors within their bounds but set aside by clustering: too far from the ensemble.
+    #[serde(default)]
+    pub outliers: Vec<NodeId>,
+    /// The robust spread of the kept anchors' offsets, ns (what the clustering measured against).
+    #[serde(default)]
+    pub selection_jitter_ns: f64,
 }
 
 impl NetworkFrame {
@@ -1058,6 +1166,8 @@ pub fn solve_frame(
         rms_offset_ns,
         rms_drift,
         falsetickers: Vec::new(),
+        outliers: Vec::new(),
+        selection_jitter_ns: 0.0,
     }
 }
 
@@ -1558,7 +1668,7 @@ mod tests {
         let true_t = NODES[0].inverse(now as f64);
         let chosen: Vec<&(u8, f64, f64, Link)> = servers
             .iter()
-            .filter(|s| !frame.falsetickers.contains(&id(s.0)))
+            .filter(|s| !frame.falsetickers.contains(&id(s.0)) && !frame.outliers.contains(&id(s.0)))
             .collect();
         let (mut wsum, mut bsum) = (0.0, 0.0);
         for (sid, bias, _, _) in &chosen {
@@ -1584,6 +1694,43 @@ mod tests {
             );
         }
         (c0, t)
+    }
+
+    /// A re-gossiped anchor keeps the age of its last measurement, so one nobody queries any
+    /// more expires even while nodes keep handing it to each other; and an anchor no edge reaches
+    /// stays out of the frame.
+    #[test]
+    fn a_stale_anchor_ages_out_and_an_unmeasured_one_stays_out() {
+        let s = 1_000_000_000u64;
+        let anchor = |n: u8, age_ns: u64| Anchor {
+            node: id(n),
+            sigma_offset_ns: 1e6,
+            sigma_drift: 5e-8,
+            stratum: 2,
+            age_ns,
+        };
+        let mut a = RelationalClock::new(id(0), TrackConfig::default());
+        let mut b = RelationalClock::new(id(1), TrackConfig::default());
+        // Node 0 heard of server 9, measured by someone 5 s before.
+        a.hear_anchor(anchor(9, 5 * s), 100 * s);
+        // Nodes 0 and 1 hand it back and forth every second for 20 minutes; nobody measures it.
+        let mut t = 100 * s;
+        for _ in 0..1200 {
+            t += s;
+            for x in a.gossip_anchors(t) {
+                b.hear_anchor(x, t);
+            }
+            for x in b.gossip_anchors(t) {
+                a.hear_anchor(x, t);
+            }
+            a.expire_anchors(t, 900 * s);
+            b.expire_anchors(t, 900 * s);
+        }
+        assert!(a.anchors().is_empty() && b.anchors().is_empty(), "the anchor circulated");
+        // An anchor with no edge to it is not used: no absolute frame from it alone.
+        a.hear_anchor(anchor(8, 0), t);
+        assert_eq!(a.anchors().len(), 1);
+        assert!(a.solve_absolute(t).is_none());
     }
 
     fn frame_anchor(c: &RelationalClock, node: NodeId) -> Anchor {
@@ -1612,6 +1759,25 @@ mod tests {
             a.sigma_offset_ns > 50_000.0 && a.sigma_offset_ns < 300_000.0,
             "{a:?}"
         );
+    }
+
+    /// Three servers within ±100 µs and a fourth 15 ms off that claims an 80 ms bound: the
+    /// interval test passes it, the cluster step sets it aside.
+    #[test]
+    fn a_server_inside_its_bound_but_far_from_the_rest_is_an_outlier() {
+        let (c0, t) = anchored(&[
+            (200, 100_000.0, 1e6, LAN),
+            (201, -100_000.0, 1e6, LAN),
+            (202, 50_000.0, 1e6, LAN),
+            (203, 15e6, 80e6, LAN),
+        ]);
+        let frame = c0.solve_absolute(t as u64).unwrap();
+        assert!(frame.falsetickers.is_empty(), "{:?}", frame.falsetickers);
+        assert_eq!(frame.outliers, vec![id(203)]);
+        assert!(frame.selection_jitter_ns < 1e6, "{}", frame.selection_jitter_ns);
+        // It is still in the frame, measured against the consensus of the others.
+        let o = frame.node(id(203)).unwrap().offset_ns;
+        assert!((o - 15e6).abs() < 1e6, "{o}");
     }
 
     #[test]
