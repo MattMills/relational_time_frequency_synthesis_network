@@ -618,8 +618,7 @@ impl RelationalClock {
         if chosen.is_empty() {
             return None;
         }
-        let mut falsetickers = Vec::new();
-        loop {
+        let solve_with = |chosen: &[Anchor]| {
             let mut all = edges.clone();
             all.extend(chosen.iter().map(|a| EdgeEstimate {
                 from: UTC,
@@ -634,7 +633,13 @@ impl RelationalClock {
                 rtt_floor_ns: 0,
                 samples: 0,
             }));
-            let mut frame = solve_frame(self.me, UTC, at_ns, &all);
+            solve_frame(self.me, UTC, at_ns, &all)
+        };
+        // Selection: an anchor whose disagreement with the rest is past its own claimed bound is
+        // a falseticker (NTP's interval test).
+        let mut falsetickers = Vec::new();
+        let mut frame = loop {
+            let frame = solve_with(&chosen);
             let worst = frame
                 .edges
                 .iter()
@@ -646,13 +651,74 @@ impl RelationalClock {
                     chosen.retain(|a| a.node != w.to);
                     falsetickers.push(w.to);
                 }
-                _ => {
-                    frame.falsetickers = falsetickers;
-                    return Some(frame);
-                }
+                _ => break frame,
             }
+        };
+        // Clustering: the bounds are worst cases (an NTP server's root distance runs to tens of
+        // ms) and pass nearly anything, so then, as ntpd's cluster algorithm does, set aside the
+        // anchor farthest from the others while it is past CLUSTER_K robust spreads of the
+        // ensemble and more than MIN_SURVIVORS remain.
+        let mut outliers = Vec::new();
+        loop {
+            let offsets: Vec<(NodeId, f64)> = chosen
+                .iter()
+                .filter_map(|a| frame.node(a.node).map(|n| (a.node, n.offset_ns)))
+                .collect();
+            let (median, spread) = robust_spread(offsets.iter().map(|x| x.1));
+            frame.selection_jitter_ns = spread;
+            if chosen.len() <= MIN_SURVIVORS {
+                break;
+            }
+            let Some(&(worst, off)) = offsets
+                .iter()
+                .max_by(|a, b| (a.1 - median).abs().total_cmp(&(b.1 - median).abs()))
+            else {
+                break;
+            };
+            if (off - median).abs() <= CLUSTER_K * spread {
+                break;
+            }
+            chosen.retain(|a| a.node != worst);
+            outliers.push(worst);
+            frame = solve_with(&chosen);
         }
+        frame.falsetickers = falsetickers;
+        frame.outliers = outliers;
+        Some(frame)
     }
+}
+
+/// Anchors kept however far apart: below this the cluster step stops.
+const MIN_SURVIVORS: usize = 3;
+/// An anchor past this many robust spreads from the ensemble's median is an outlier.
+const CLUSTER_K: f64 = 4.0;
+/// The smallest spread the cluster step assumes (references agreeing to within this are not
+/// told apart).
+const MIN_SPREAD_NS: f64 = 50_000.0;
+
+/// The median of `xs` and their robust spread (1.4826 × the median absolute deviation, a
+/// standard deviation for normal scatter that a few wild values do not inflate), floored at
+/// MIN_SPREAD_NS.
+fn robust_spread(xs: impl Iterator<Item = f64>) -> (f64, f64) {
+    let mut v: Vec<f64> = xs.collect();
+    if v.is_empty() {
+        return (0.0, MIN_SPREAD_NS);
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let n = v.len();
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2.0
+        }
+    };
+    let m = median(&mut v);
+    let mut dev: Vec<f64> = v.iter().map(|x| (x - m).abs()).collect();
+    (m, (1.4826 * median(&mut dev)).max(MIN_SPREAD_NS))
+}
+
+impl RelationalClock {
 }
 
 /// One node in a solved frame, relative to the reference.
@@ -741,9 +807,16 @@ pub struct NetworkFrame {
     pub rms_offset_ns: f64,
     /// Root mean square of the edges' relative-frequency residuals.
     pub rms_drift: f64,
-    /// Anchors set aside by clock selection in an absolute frame.
+    /// Anchors set aside by clock selection in an absolute frame: their disagreement with the
+    /// rest is past their own claimed bounds.
     #[serde(default)]
     pub falsetickers: Vec<NodeId>,
+    /// Anchors within their bounds but set aside by clustering: too far from the ensemble.
+    #[serde(default)]
+    pub outliers: Vec<NodeId>,
+    /// The robust spread of the kept anchors' offsets, ns (what the clustering measured against).
+    #[serde(default)]
+    pub selection_jitter_ns: f64,
 }
 
 impl NetworkFrame {
@@ -1093,6 +1166,8 @@ pub fn solve_frame(
         rms_offset_ns,
         rms_drift,
         falsetickers: Vec::new(),
+        outliers: Vec::new(),
+        selection_jitter_ns: 0.0,
     }
 }
 
@@ -1593,7 +1668,7 @@ mod tests {
         let true_t = NODES[0].inverse(now as f64);
         let chosen: Vec<&(u8, f64, f64, Link)> = servers
             .iter()
-            .filter(|s| !frame.falsetickers.contains(&id(s.0)))
+            .filter(|s| !frame.falsetickers.contains(&id(s.0)) && !frame.outliers.contains(&id(s.0)))
             .collect();
         let (mut wsum, mut bsum) = (0.0, 0.0);
         for (sid, bias, _, _) in &chosen {
@@ -1684,6 +1759,26 @@ mod tests {
             a.sigma_offset_ns > 50_000.0 && a.sigma_offset_ns < 300_000.0,
             "{a:?}"
         );
+    }
+
+    /// Four servers within ±100 µs and a fifth 15 ms off that claims an 80 ms bound: the interval
+    /// test passes it, the cluster step sets it aside.
+    #[test]
+    fn a_server_inside_its_bound_but_far_from_the_rest_is_an_outlier() {
+        let (c0, t) = anchored(&[
+            (200, 100_000.0, 1e6, LAN),
+            (201, -100_000.0, 1e6, LAN),
+            (202, 50_000.0, 1e6, LAN),
+            (203, -50_000.0, 1e6, LAN),
+            (204, 15e6, 80e6, LAN),
+        ]);
+        let frame = c0.solve_absolute(t as u64).unwrap();
+        assert!(frame.falsetickers.is_empty(), "{:?}", frame.falsetickers);
+        assert_eq!(frame.outliers, vec![id(204)]);
+        assert!(frame.selection_jitter_ns < 1e6, "{}", frame.selection_jitter_ns);
+        // It is still in the frame, measured against the consensus of the others.
+        let o = frame.node(id(204)).unwrap().offset_ns;
+        assert!((o - 15e6).abs() < 1e6, "{o}");
     }
 
     #[test]
