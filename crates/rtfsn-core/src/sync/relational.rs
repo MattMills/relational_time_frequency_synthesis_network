@@ -1761,23 +1761,22 @@ mod tests {
         );
     }
 
-    /// Four servers within ±100 µs and a fifth 15 ms off that claims an 80 ms bound: the interval
-    /// test passes it, the cluster step sets it aside.
+    /// Three servers within ±100 µs and a fourth 15 ms off that claims an 80 ms bound: the
+    /// interval test passes it, the cluster step sets it aside.
     #[test]
     fn a_server_inside_its_bound_but_far_from_the_rest_is_an_outlier() {
         let (c0, t) = anchored(&[
             (200, 100_000.0, 1e6, LAN),
             (201, -100_000.0, 1e6, LAN),
             (202, 50_000.0, 1e6, LAN),
-            (203, -50_000.0, 1e6, LAN),
-            (204, 15e6, 80e6, LAN),
+            (203, 15e6, 80e6, LAN),
         ]);
         let frame = c0.solve_absolute(t as u64).unwrap();
         assert!(frame.falsetickers.is_empty(), "{:?}", frame.falsetickers);
-        assert_eq!(frame.outliers, vec![id(204)]);
+        assert_eq!(frame.outliers, vec![id(203)]);
         assert!(frame.selection_jitter_ns < 1e6, "{}", frame.selection_jitter_ns);
         // It is still in the frame, measured against the consensus of the others.
-        let o = frame.node(id(204)).unwrap().offset_ns;
+        let o = frame.node(id(203)).unwrap().offset_ns;
         assert!((o - 15e6).abs() < 1e6, "{o}");
     }
 
