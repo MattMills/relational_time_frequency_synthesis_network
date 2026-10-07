@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Jobs run on the self-hosted hippo runners; pull requests from forks run on GitHub-hosted
+# ubuntu-latest instead, so outside code never runs on hippo. The runners' job-started hook
+# cleans the workspace but keeps target/, so checkouts use `clean: false` and each build is
+# incremental against that runner's previous one; ~/.cargo persists on the runner too.
+jobs:
+  rust:
+    name: Rust — fmt & test
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","hippo"]') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: false
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # The whole workspace, natively (rtfsn-wasm included: it builds as an rlib).
+      - name: Test
+        run: cargo nextest run --workspace --locked --no-fail-fast
+
+      - name: Doctests
+        run: cargo test --workspace --doc --locked
